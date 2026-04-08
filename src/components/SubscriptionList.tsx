@@ -1,0 +1,238 @@
+import React from 'react';
+import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost } from '../types';
+import { formatCurrency } from '../lib/utils';
+import { Edit2, Trash2, CalendarPlus } from 'lucide-react';
+import { useAppContext } from '../AppContext';
+import { useTranslation } from '../i18n';
+
+interface SubscriptionListProps {
+  subscriptions: Subscription[];
+  baseCurrency: Currency;
+  exchangeRates: Record<Currency, number>;
+  onEdit: (sub: Subscription) => void;
+  onDelete: (id: string) => void;
+}
+
+export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete }: SubscriptionListProps) {
+  const { language } = useAppContext();
+  const t = useTranslation(language);
+
+  // Sort by due date
+  const sortedSubs = [...subscriptions].sort((a, b) => a.dueDate - b.dueDate);
+
+  const generateICS = (sub: Subscription) => {
+    const now = new Date();
+    const dueDate = new Date(now.getFullYear(), now.getMonth(), sub.dueDate);
+    if (dueDate < now) {
+      dueDate.setMonth(dueDate.getMonth() + 1);
+    }
+    
+    const start = dueDate.toISOString().replace(/-|:|\.\d+/g, '');
+    const end = new Date(dueDate.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
+    
+    const icsContent = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+DTSTART:${start}
+DTEND:${end}
+SUMMARY:Payment: ${sub.name}
+DESCRIPTION:Payment reminder for ${sub.name} (${formatCurrency(getSubscriptionTotalCost(sub), sub.costCurrency)})
+RRULE:FREQ=${sub.billingCycle === 'Monthly' ? 'MONTHLY' : 'YEARLY'}
+END:VEVENT
+END:VCALENDAR`;
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = window.URL.createObjectURL(blob);
+    link.setAttribute('download', `${sub.name.replace(/\s+/g, '_')}_reminder.ics`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden transition-colors">
+      <div className="p-6 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
+        <h3 className="text-lg font-medium text-gray-900 dark:text-white">{t('list.title')}</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-gray-50/50 dark:bg-gray-800/50 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              <th className="p-4 font-medium">{t('list.service')}</th>
+              <th className="p-4 font-medium">{t('list.dueDate')}</th>
+              <th className="p-4 font-medium">{t('list.originalCost')}</th>
+              <th className="p-4 font-medium">{t('list.return')}</th>
+              <th className="p-4 font-medium">{t('list.netCost')} ({baseCurrency})</th>
+              <th className="p-4 font-medium">{t('list.payment')}</th>
+              <th className="p-4 font-medium text-right">{t('list.actions')}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {sortedSubs.map((sub) => {
+              const subTotalCost = getSubscriptionTotalCost(sub);
+              const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
+              const costInBase = convertCurrency(monthlyCost, sub.costCurrency, baseCurrency, exchangeRates);
+              
+              let incomeInBase = 0;
+              let cashbackInBase = 0;
+
+              if (sub.hasIncome) {
+                const monthlyIncome = getMonthlyAmount(sub.incomeAmount, sub.incomeFrequency);
+                incomeInBase = convertCurrency(monthlyIncome, sub.incomeCurrency, baseCurrency, exchangeRates);
+              }
+
+              if (sub.hasCashback) {
+                const cashbackAmount = monthlyCost * (sub.cashbackPercentage / 100);
+                cashbackInBase = convertCurrency(cashbackAmount, sub.costCurrency, baseCurrency, exchangeRates);
+              }
+
+              const netCostInBase = costInBase - incomeInBase - cashbackInBase;
+
+              return (
+                <React.Fragment key={sub.id}>
+                  <tr className="hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition-colors group">
+                    <td className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xl overflow-hidden shrink-0">
+                          {sub.logoUrl ? (
+                            <img src={sub.logoUrl} alt={sub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
+                          ) : (
+                            sub.emoji
+                          )}
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                            {sub.name}
+                            {sub.type === 'FixedExpense' && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+                                {t('form.typeFixedExpense')}
+                              </span>
+                            )}
+                            {sub.subItems && sub.subItems.length > 0 && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                                +{sub.subItems.length}
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{sub.category}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex flex-col">
+                        <span className="text-sm text-gray-900 dark:text-gray-300">Dia {sub.dueDate}</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{sub.billingCycle === 'Monthly' ? t('form.monthly') : t('form.yearly')}</span>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-900 dark:text-gray-300">
+                          {formatCurrency(subTotalCost, sub.costCurrency)}
+                        </span>
+                        {sub.subItems && sub.subItems.length > 0 && (
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            (Base: {formatCurrency(sub.costAmount, sub.costCurrency)})
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex flex-col gap-1">
+                        {sub.hasIncome && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
+                              +{formatCurrency(sub.incomeAmount, sub.incomeCurrency)}
+                            </span>
+                          </div>
+                        )}
+                        {sub.hasCashback && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">
+                              {sub.cashbackPercentage}% CB
+                            </span>
+                          </div>
+                        )}
+                        {!sub.hasIncome && !sub.hasCashback && (
+                          <span className="text-sm text-gray-400 dark:text-gray-600">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <span className={`text-sm font-medium ${netCostInBase < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-gray-300'}`}>
+                        {formatCurrency(netCostInBase, baseCurrency)}
+                      </span>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        {sub.bankLogoUrl && sub.paymentSource !== 'Outro' && (
+                          <img src={sub.bankLogoUrl} alt={sub.paymentSource} referrerPolicy="no-referrer" className="w-5 h-5 rounded-full bg-white object-cover" />
+                        )}
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-300">
+                            {sub.paymentMethod}
+                          </span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{sub.paymentSource}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-4 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => generateICS(sub)}
+                          title={t('app.addToCalendar')}
+                          className="p-2 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                        >
+                          <CalendarPlus size={16} />
+                        </button>
+                        <button 
+                          onClick={() => onEdit(sub)}
+                          className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                        <button 
+                          onClick={() => onDelete(sub.id)}
+                          className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {sub.subItems && sub.subItems.length > 0 && (
+                    <tr className="bg-gray-50/30 dark:bg-gray-800/20">
+                      <td colSpan={7} className="p-0">
+                        <div className="pl-16 pr-4 py-3 border-t border-gray-50 dark:border-gray-800/50">
+                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wider">{t('list.subItems')}:</div>
+                          <div className="space-y-2">
+                            {sub.subItems.map(item => (
+                              <div key={item.id} className="flex items-center justify-between text-sm">
+                                <span className="text-gray-600 dark:text-gray-400 flex items-center gap-2">
+                                  <div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></div>
+                                  {item.name}
+                                </span>
+                                <span className="text-gray-900 dark:text-gray-300 font-medium">{formatCurrency(item.costAmount, sub.costCurrency)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {sortedSubs.length === 0 && (
+              <tr>
+                <td colSpan={7} className="p-8 text-center text-gray-500 dark:text-gray-400">
+                  {t('list.empty')}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
