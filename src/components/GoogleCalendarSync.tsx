@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useGoogleLogin } from '@react-oauth/google';
+import { useGoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
 import { Calendar, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import { Subscription } from '../types';
 import { useAppContext } from '../AppContext';
@@ -9,7 +9,9 @@ interface GoogleCalendarSyncProps {
   subscriptions: Subscription[];
 }
 
-export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+function SyncButton({ subscriptions }: GoogleCalendarSyncProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -113,5 +115,31 @@ export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
         </div>
       )}
     </div>
+  );
+}
+
+export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
+  const { language } = useAppContext();
+  const t = useTranslation(language);
+
+  if (!GOOGLE_CLIENT_ID) {
+    return (
+      <button
+        disabled
+        title="Google Client ID not configured"
+        className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 px-4 py-2 rounded-xl text-sm font-medium opacity-50 cursor-not-allowed"
+      >
+        <Calendar size={16} />
+        <span className="hidden sm:inline">
+          {t('app.connectCalendar') || 'Conectar Google Calendar'}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <SyncButton subscriptions={subscriptions} />
+    </GoogleOAuthProvider>
   );
 }
