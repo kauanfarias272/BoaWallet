@@ -7,6 +7,28 @@
   </head>
   <body>
     <div id="root"></div>
+    <div id="debug-error-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; font-size:12px; background:rgba(0,0,0,0.9); z-index:9999; color:red; padding:20px; overflow:auto; word-break:break-all;">
+      <h3 style="color:white;margin-top:0">Crash Report:</h3>
+      <div id="debug-error-text"></div>
+    </div>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        document.getElementById('debug-error-overlay').style.display = 'block';
+        var errorInfo = [
+          "Message: " + msg,
+          "URL: " + url,
+          "Line: " + line,
+          "Column: " + col,
+          "Error object: " + JSON.stringify(error)
+        ].join("<br><br>");
+        document.getElementById('debug-error-text').innerHTML += "<hr>" + errorInfo;
+        return false;
+      };
+      window.addEventListener('unhandledrejection', function(event) {
+        document.getElementById('debug-error-overlay').style.display = 'block';
+        document.getElementById('debug-error-text').innerHTML += "<hr>Unhandled Rejection: " + (event.reason ? event.reason.toString() : 'Unknown');
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
