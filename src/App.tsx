@@ -33,7 +33,10 @@ export default function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingSub, setEditingSub] = useState<Subscription | undefined>(undefined);
   const [subToDelete, setSubToDelete] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'cashflow'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'cashflow' | 'history'>('overview');
+  const [pendingPaymentSub, setPendingPaymentSub] = useState<Subscription | null>(null);
+  const [cancelPromptSub, setCancelPromptSub] = useState<Subscription | null>(null);
+
   const [clickCount, setClickCount] = useState(0);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
 
@@ -55,6 +58,69 @@ export default function App() {
   useEffect(() => {
     if (clickCount > 0) {
       const timer = setTimeout(() => setClickCount(0), 2000);
+      useEffect(() => {
+        if (!subscriptions.length) return;
+        const today = new Date();
+        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+        let foundPending = null;
+        let subsToAutoPay: any[] = [];
+
+        subscriptions.forEach(sub => {
+          if (sub.status === 'cancelled') return;
+          const history = sub.paymentHistory || {};
+          if (history[currentMonthKey]) return; // already answered
+
+          let daysSinceDue = today.getDate() - sub.dueDate;
+          if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
+            daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
+          }
+
+          if (daysSinceDue >= 0 && daysSinceDue <= 1) {
+            if (!foundPending) foundPending = sub;
+          } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
+            subsToAutoPay.push(sub);
+          }
+        });
+
+        if (subsToAutoPay.length > 0) {
+          Promise.all(subsToAutoPay.map(sub => handleSave({
+            ...sub,
+            paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
+          }))).catch(console.error);
+        }
+
+        if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
+          setPendingPaymentSub(foundPending);
+        }
+      }, [subscriptions]);
+
+      const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
+        const today = new Date();
+        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+        const history = sub.paymentHistory || {};
+
+        if (answeredYes) {
+          handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
+          setPendingPaymentSub(null);
+        } else {
+          setPendingPaymentSub(null);
+          setCancelPromptSub(sub);
+        }
+      };
+
+      const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
+        const today = new Date();
+        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+        const history = sub.paymentHistory || {};
+
+        handleSave({
+          ...sub,
+          status: cancelled ? 'cancelled' : 'active',
+          paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
+        });
+        setCancelPromptSub(null);
+      };
+
       return () => clearTimeout(timer);
     }
   }, [clickCount]);
@@ -155,7 +221,7 @@ export default function App() {
     if (hour < 12) timeGreeting = t('app.goodMorning');
     else if (hour < 18) timeGreeting = t('app.goodAfternoon');
     else timeGreeting = t('app.goodEvening');
-    
+
     const nameToUse = user?.displayName ? user.displayName.split(' ')[0] : userName;
     return nameToUse ? `${timeGreeting}, ${nameToUse}.` : `${timeGreeting}.`;
   };
@@ -213,6 +279,69 @@ export default function App() {
       console.error("Error fetching adjustments from Firestore:", error);
     });
 
+    useEffect(() => {
+      if (!subscriptions.length) return;
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      let foundPending = null;
+      let subsToAutoPay: any[] = [];
+
+      subscriptions.forEach(sub => {
+        if (sub.status === 'cancelled') return;
+        const history = sub.paymentHistory || {};
+        if (history[currentMonthKey]) return; // already answered
+
+        let daysSinceDue = today.getDate() - sub.dueDate;
+        if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
+          daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
+        }
+
+        if (daysSinceDue >= 0 && daysSinceDue <= 1) {
+          if (!foundPending) foundPending = sub;
+        } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
+          subsToAutoPay.push(sub);
+        }
+      });
+
+      if (subsToAutoPay.length > 0) {
+        Promise.all(subsToAutoPay.map(sub => handleSave({
+          ...sub,
+          paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
+        }))).catch(console.error);
+      }
+
+      if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
+        setPendingPaymentSub(foundPending);
+      }
+    }, [subscriptions]);
+
+    const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      const history = sub.paymentHistory || {};
+
+      if (answeredYes) {
+        handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
+        setPendingPaymentSub(null);
+      } else {
+        setPendingPaymentSub(null);
+        setCancelPromptSub(sub);
+      }
+    };
+
+    const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      const history = sub.paymentHistory || {};
+
+      handleSave({
+        ...sub,
+        status: cancelled ? 'cancelled' : 'active',
+        paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
+      });
+      setCancelPromptSub(null);
+    };
+
     return () => {
       unsubscribeSubs();
       unsubscribeAdj();
@@ -249,7 +378,7 @@ export default function App() {
       try {
         const subRef = doc(db, `users/${user.uid}/subscriptions`, sub.id);
         const isNew = !sub.createdAt || typeof sub.createdAt === 'string';
-        
+
         await setDoc(subRef, {
           ...sub,
           userId: user.uid,
@@ -308,7 +437,7 @@ export default function App() {
     const checkReminders = () => {
       const today = new Date();
       const currentDay = today.getDate();
-      
+
       subscriptions.forEach(sub => {
         if (sub.dueDate === currentDay) {
           showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }));
@@ -326,11 +455,137 @@ export default function App() {
 
     // Check once on load
     checkReminders();
-    
+
     // Check every hour
     const interval = setInterval(checkReminders, 60 * 60 * 1000);
+    useEffect(() => {
+      if (!subscriptions.length) return;
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      let foundPending = null;
+      let subsToAutoPay: any[] = [];
+
+      subscriptions.forEach(sub => {
+        if (sub.status === 'cancelled') return;
+        const history = sub.paymentHistory || {};
+        if (history[currentMonthKey]) return; // already answered
+
+        let daysSinceDue = today.getDate() - sub.dueDate;
+        if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
+          daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
+        }
+
+        if (daysSinceDue >= 0 && daysSinceDue <= 1) {
+          if (!foundPending) foundPending = sub;
+        } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
+          subsToAutoPay.push(sub);
+        }
+      });
+
+      if (subsToAutoPay.length > 0) {
+        Promise.all(subsToAutoPay.map(sub => handleSave({
+          ...sub,
+          paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
+        }))).catch(console.error);
+      }
+
+      if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
+        setPendingPaymentSub(foundPending);
+      }
+    }, [subscriptions]);
+
+    const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      const history = sub.paymentHistory || {};
+
+      if (answeredYes) {
+        handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
+        setPendingPaymentSub(null);
+      } else {
+        setPendingPaymentSub(null);
+        setCancelPromptSub(sub);
+      }
+    };
+
+    const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
+      const today = new Date();
+      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+      const history = sub.paymentHistory || {};
+
+      handleSave({
+        ...sub,
+        status: cancelled ? 'cancelled' : 'active',
+        paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
+      });
+      setCancelPromptSub(null);
+    };
+
     return () => clearInterval(interval);
   }, [subscriptions, t]);
+
+  useEffect(() => {
+    if (!subscriptions.length) return;
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    let foundPending = null;
+    let subsToAutoPay: any[] = [];
+
+    subscriptions.forEach(sub => {
+      if (sub.status === 'cancelled') return;
+      const history = sub.paymentHistory || {};
+      if (history[currentMonthKey]) return; // already answered
+
+      let daysSinceDue = today.getDate() - sub.dueDate;
+      if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
+        daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
+      }
+
+      if (daysSinceDue >= 0 && daysSinceDue <= 1) {
+        if (!foundPending) foundPending = sub;
+      } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
+        subsToAutoPay.push(sub);
+      }
+    });
+
+    if (subsToAutoPay.length > 0) {
+      Promise.all(subsToAutoPay.map(sub => handleSave({
+        ...sub,
+        paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
+      }))).catch(console.error);
+    }
+
+    if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
+      setPendingPaymentSub(foundPending);
+    }
+  }, [subscriptions]);
+
+  const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    const history = sub.paymentHistory || {};
+
+    if (answeredYes) {
+      handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
+      setPendingPaymentSub(null);
+    } else {
+      setPendingPaymentSub(null);
+      setCancelPromptSub(sub);
+    }
+  };
+
+  const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    const history = sub.paymentHistory || {};
+
+    handleSave({
+      ...sub,
+      status: cancelled ? 'cancelled' : 'active',
+      paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
+    });
+    setCancelPromptSub(null);
+  };
 
   return (
     <div className="min-h-screen bg-[#121212] text-gray-100 font-sans pb-20 transition-colors duration-200">
@@ -339,7 +594,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img src="/logo.png" alt="BoaWallet Logo" className="w-10 h-10 rounded-full object-cover shadow-sm" onError={(e) => { e.currentTarget.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=BoaWallet'; }} />
-            <h1 
+            <h1
               className="text-2xl font-serif font-medium tracking-tight text-white flex items-center cursor-pointer select-none"
               onClick={handleTitleClick}
             >
@@ -349,7 +604,7 @@ export default function App() {
               )}
             </h1>
           </div>
-          
+
           <div className="flex items-center gap-3 sm:gap-6">
             <div className="flex items-center bg-[#1a1a1a] border border-gray-800 rounded-full p-1 shadow-inner">
               {/* Language Dropdown */}
@@ -425,7 +680,7 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <button 
+                  <button
                     onClick={handleLogin}
                     className="flex items-center gap-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-gray-800 px-3 py-1.5 rounded-full transition-colors text-sm font-medium text-gray-300"
                   >
@@ -436,7 +691,7 @@ export default function App() {
               </div>
             )}
 
-            <button 
+            <button
               onClick={openNew}
               className="flex items-center gap-2 bg-[#5A5A40] hover:bg-[#4a4a34] text-white px-4 py-2.5 rounded-full text-sm font-medium transition-colors shadow-sm dark:bg-[#7a7a5c] dark:hover:bg-[#8a8a6c]"
             >
@@ -458,38 +713,45 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-6 border-b border-gray-800">
-          <button 
+          <button
             onClick={() => setActiveTab('overview')}
             className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'overview' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
           >
             {t('app.overview')}
             {activeTab === 'overview' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
-          <button 
+          <button
             onClick={() => setActiveTab('cashflow')}
             className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'cashflow' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
           >
             {t('app.cashflow')}
             {activeTab === 'cashflow' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'history' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            {t('app.disabledPayments') || 'Desativados'}
+            {activeTab === 'history' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+          </button>
         </div>
 
-        {activeTab === 'overview' ? (
+        {activeTab === 'overview' && (
           <>
-            <Dashboard 
-              subscriptions={subscriptions} 
-              baseCurrency={baseCurrency} 
-              exchangeRates={exchangeRates} 
+            <Dashboard
+              subscriptions={subscriptions.filter(s => s.status !== 'cancelled')}
+              baseCurrency={baseCurrency}
+              exchangeRates={exchangeRates}
               adjustments={adjustments}
               onAddAdjustment={handleAddAdjustment}
               onRemoveAdjustment={handleRemoveAdjustment}
             />
-            
+
             <div className="grid grid-cols-1 gap-8">
               <div className="col-span-1">
-                <SubscriptionList 
-                  subscriptions={subscriptions} 
-                  baseCurrency={baseCurrency} 
+                <SubscriptionList
+                  subscriptions={subscriptions.filter(s => s.status !== 'cancelled')}
+                  baseCurrency={baseCurrency}
                   exchangeRates={exchangeRates}
                   onEdit={openEdit}
                   onDelete={handleDelete}
@@ -497,21 +759,38 @@ export default function App() {
               </div>
             </div>
           </>
-        ) : (
-          <Cashflow subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+        )}
+
+        {activeTab === 'cashflow' && (
+          <Cashflow subscriptions={subscriptions.filter(s => s.status !== 'cancelled')} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+        )}
+
+        {activeTab === 'history' && (
+          <div className="grid grid-cols-1 gap-8">
+            <div className="col-span-1 opacity-60">
+              <h2 className="text-xl font-medium text-white mb-4">{t('app.disabledPayments') || 'Pagamentos Desativados'}</h2>
+              <SubscriptionList
+                subscriptions={subscriptions.filter(s => s.status === 'cancelled')}
+                baseCurrency={baseCurrency}
+                exchangeRates={exchangeRates}
+                onEdit={openEdit}
+                onDelete={handleDelete}
+              />
+            </div>
+          </div>
         )}
       </main>
 
       {!userName && !user && !authLoading && <WelcomeModal onSave={setUserName} />}
 
       {isFormOpen && (
-        <SubscriptionForm 
-          subscription={editingSub} 
-          onSave={handleSave} 
+        <SubscriptionForm
+          subscription={editingSub}
+          onSave={handleSave}
           onClose={() => {
             setIsFormOpen(false);
             setEditingSub(undefined);
-          }} 
+          }}
         />
       )}
 
@@ -527,7 +806,7 @@ export default function App() {
                 &times;
               </button>
             </div>
-            
+
             <div className="space-y-3">
               <button
                 onClick={exportJSON}
@@ -536,7 +815,7 @@ export default function App() {
                 <Download size={18} className="text-[#5A5A40] dark:text-[#d0d0a0]" />
                 {t('app.exportJson')}
               </button>
-              
+
               <label className="w-full flex items-center gap-3 px-4 py-3 bg-[#fdfbf7] dark:bg-[#2a2a2a] hover:bg-gray-100 dark:hover:bg-[#333] rounded-xl transition-colors text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
                 <Upload size={18} className="text-[#5A5A40] dark:text-[#d0d0a0]" />
                 {t('app.importJson')}

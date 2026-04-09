@@ -57,10 +57,10 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
       const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
       cost += costInBase;
-      
+
       const dailyInBase = convertCurrency(getDailyAmount(effectiveCost.amount, sub.billingCycle), effectiveCost.currency, baseCurrency, exchangeRates);
       daily += dailyInBase;
-      
+
       const yearlyInBase = convertCurrency(getYearlyAmount(effectiveCost.amount, sub.billingCycle), effectiveCost.currency, baseCurrency, exchangeRates);
       yearly += yearlyInBase;
 
@@ -100,10 +100,10 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       const translatedCategory = t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any);
       data[translatedCategory] = (data[translatedCategory] || 0) + costInBase;
     });
-    
+
     const labels = Object.keys(data);
     const values = Object.values(data);
-    
+
     return {
       labels,
       datasets: [
@@ -123,10 +123,10 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
       data[effectiveCost.currency] = (data[effectiveCost.currency] || 0) + monthlyCost;
     });
-    
+
     const labels = Object.keys(data);
     const values = Object.values(data);
-    
+
     return {
       labels,
       datasets: [
@@ -146,9 +146,9 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
 
   const getFunFact = (netCost: number, baseCurrency: Currency) => {
     if (netCost <= 0) return null;
-    
+
     const costInUsd = convertCurrency(netCost, baseCurrency, 'USD', exchangeRates);
-    
+
     // Localized prices in USD equivalent
     let coffeePriceUsd = 4;
     let pizzaPriceUsd = 15;
@@ -163,7 +163,7 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       coffeePriceUsd = 2.2; // € 2
       pizzaPriceUsd = 11.0; // € 10
     }
-    
+
     if (costInUsd < 50) {
       const coffees = Math.floor(costInUsd / coffeePriceUsd);
       return t('dashboard.coffeeEquivalent', { coffees: coffees.toString() });
@@ -198,34 +198,26 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       const effectiveCost = getEffectiveTotalCost(sub);
       categoryTotals[sub.category] = (categoryTotals[sub.category] || 0) + getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
     });
-    
+
+    if (Object.keys(categoryTotals).length === 0) return t('persona.Outros' as any);
+
     const topCategory = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1])[0][0];
-    
-    const personas: Record<string, string> = {
-      'Streaming': 'Rei do Streaming',
-      'Software': 'Tech Guru',
-      'Games': 'Gamer Pro',
-      'Education': 'Estudante Focado',
-      'Health': 'Fitness & Saúde',
-      'Housing': 'Caseiro',
-      'Utilities': 'Essencialista',
-      'Subscriptions': 'Assinante Serial',
-      'Others': 'Eclético'
-    };
-    
-    return personas[topCategory] || personas['Others'];
-  }, [subscriptions]);
+
+    const mapped = t(`persona.${topCategory}` as any);
+    if (mapped !== `persona.${topCategory}`) return mapped;
+    return t('persona.Outros' as any);
+  }, [subscriptions, t]);
 
   const nextPayment = useMemo(() => {
     if (subscriptions.length === 0) return null;
-    
+
     const today = new Date();
     const currentDay = today.getDate();
-    
+
     // Find the next due date
     let nextSub = null;
     let minDays = 32; // Max days in a month + 1
-    
+
     subscriptions.forEach(sub => {
       let daysUntil = sub.dueDate - currentDay;
       if (daysUntil < 0) {
@@ -233,13 +225,13 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
         const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
         daysUntil = (daysInMonth - currentDay) + sub.dueDate;
       }
-      
+
       if (daysUntil < minDays) {
         minDays = daysUntil;
         nextSub = sub;
       }
     });
-    
+
     return { sub: nextSub, days: minDays };
   }, [subscriptions]);
 
@@ -267,7 +259,7 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div 
+        <div
           onClick={() => setShowAdjustments(true)}
           className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors cursor-pointer hover:ring-2 hover:ring-[#5A5A40]/50 dark:hover:ring-[#d0d0a0]/50 relative group"
         >
@@ -333,7 +325,7 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
             </div>
           </div>
         )}
-        
+
         <div className="bg-white dark:bg-[#1a1a1a] p-4 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 flex items-center gap-4">
           <div className="w-12 h-12 rounded-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center shrink-0">
             <Activity size={24} className="text-green-500" />
@@ -342,7 +334,7 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('app.healthScore')}</p>
             <div className="flex items-center gap-3 mt-1">
               <div className="flex-1 h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-                <div 
+                <div
                   className={`h-full rounded-full ${healthScore > 70 ? 'bg-green-500' : healthScore > 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
                   style={{ width: `${healthScore}%` }}
                 />
@@ -357,13 +349,13 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
         <div className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors">
           <h3 className="text-lg font-serif font-medium text-gray-900 dark:text-white mb-6">{t('dashboard.categoryChart')} ({baseCurrency})</h3>
           <div className="h-64 flex items-center justify-center">
-            <Pie 
-              data={categoryData} 
-              options={{ 
+            <Pie
+              data={categoryData}
+              options={{
                 maintainAspectRatio: false,
                 color: chartOptions.color,
                 plugins: {
-                  legend: { 
+                  legend: {
                     position: 'right',
                     labels: { color: chartOptions.color }
                   },
@@ -373,7 +365,7 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
                     }
                   }
                 }
-              }} 
+              }}
             />
           </div>
         </div>
@@ -381,8 +373,8 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
         <div className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors">
           <h3 className="text-lg font-serif font-medium text-gray-900 dark:text-white mb-6">{t('dashboard.currencyChart')}</h3>
           <div className="h-64">
-            <Bar 
-              data={currencyData} 
+            <Bar
+              data={currencyData}
               options={{
                 maintainAspectRatio: false,
                 color: chartOptions.color,
@@ -395,12 +387,12 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
                   }
                 },
                 scales: {
-                  x: { 
+                  x: {
                     grid: { display: false },
                     ticks: { color: chartOptions.color }
                   },
-                  y: { 
-                    grid: { color: '#374151' }, 
+                  y: {
+                    grid: { color: '#374151' },
                     border: { display: false },
                     ticks: { color: chartOptions.color }
                   }
@@ -412,7 +404,8 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       </div>
 
       {showAdjustments && (
-        <AdjustmentsModal 
+        <AdjustmentsModal
+          subscriptions={subscriptions}
           adjustments={adjustments}
           onAdd={onAddAdjustment}
           onRemove={onRemoveAdjustment}

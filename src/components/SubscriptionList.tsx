@@ -27,10 +27,10 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
     if (dueDate < now) {
       dueDate.setMonth(dueDate.getMonth() + 1);
     }
-    
+
     const start = dueDate.toISOString().replace(/-|:|\.\d+/g, '');
     const end = new Date(dueDate.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
-    
+
     const icsContent = `BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
@@ -74,7 +74,7 @@ END:VCALENDAR`;
               const effectiveCost = getEffectiveTotalCost(sub);
               const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
               const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
-              
+
               let incomeInBase = 0;
               let cashbackInBase = 0;
 
@@ -92,7 +92,7 @@ END:VCALENDAR`;
 
               return (
                 <React.Fragment key={sub.id}>
-                  <tr 
+                  <tr
                     className="hover:bg-[#fdfbf7] dark:hover:bg-[#222] transition-colors group cursor-pointer sm:cursor-default"
                     onClick={() => {
                       if (window.innerWidth < 640) {
@@ -140,14 +140,20 @@ END:VCALENDAR`;
                     </td>
                     <td className="p-4 hidden md:table-cell">
                       <div className="flex flex-col">
-                        <span className="text-sm font-medium text-gray-900 dark:text-gray-300">
-                          {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
-                        </span>
                         {sub.isPromotional && sub.originalCost ? (
-                          <span className="text-xs text-gray-500 dark:text-gray-400 line-through">
-                            {formatCurrency(sub.originalCost, sub.costCurrency)}
+                          <>
+                            <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                              {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
+                            </span>
+                            <span className="text-xs text-red-500 line-through">
+                              {formatCurrency(sub.originalCost, sub.costCurrency)}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-300">
+                            {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
                           </span>
-                        ) : null}
+                        )}
                         {sub.subItems && sub.subItems.length > 0 && (
                           <span className="text-xs text-gray-500 dark:text-gray-400">
                             (Base: {formatCurrency(sub.costAmount, sub.costCurrency)})
@@ -199,20 +205,20 @@ END:VCALENDAR`;
                     </td>
                     <td className="p-4 text-right hidden sm:table-cell">
                       <div className="flex items-center justify-end gap-2">
-                        <button 
+                        <button
                           onClick={() => generateICS(sub)}
                           title={t('app.addToCalendar')}
                           className="p-2 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
                         >
                           <CalendarPlus size={16} />
                         </button>
-                        <button 
+                        <button
                           onClick={() => onEdit(sub)}
                           className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30"
                         >
                           <Edit2 size={16} />
                         </button>
-                        <button 
+                        <button
                           onClick={() => onDelete(sub.id)}
                           className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30"
                         >
@@ -268,7 +274,7 @@ END:VCALENDAR`;
       {/* Mobile Actions Modal */}
       {selectedSub && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 sm:hidden" onClick={() => setSelectedSub(null)}>
-          <div 
+          <div
             className="bg-[#1a1a1a] w-full max-w-sm rounded-3xl p-6 border border-gray-800 animate-in zoom-in-95 duration-200 shadow-2xl"
             onClick={e => e.stopPropagation()}
           >
@@ -290,23 +296,23 @@ END:VCALENDAR`;
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="grid grid-cols-3 gap-3">
-              <button 
+              <button
                 onClick={() => { generateICS(selectedSub); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-emerald-400 hover:bg-[#2a2a2a] transition-colors"
               >
                 <CalendarPlus size={24} />
                 <span className="text-xs font-medium">Lembrete</span>
               </button>
-              <button 
+              <button
                 onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"
               >
                 <Edit2 size={24} />
                 <span className="text-xs font-medium">Editar</span>
               </button>
-              <button 
+              <button
                 onClick={() => { onDelete(selectedSub.id); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-red-400 hover:bg-[#2a2a2a] transition-colors"
               >

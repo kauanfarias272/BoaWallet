@@ -14,6 +14,7 @@ export interface SubItem {
 export interface Adjustment {
   id: string;
   description: string;
+  subscriptionId?: string;
   amount: number;
   currency: Currency;
   month: number;
@@ -62,6 +63,9 @@ export interface Subscription {
   incomeCurrency: Currency;
   incomeFrequency: BillingCycle;
   incomeSourceDescription: string;
+  
+  status?: 'active' | 'cancelled';
+  paymentHistory?: Record<string, 'paid' | 'skipped' | 'auto-paid'>;
 }
 
 // Default fallback rates

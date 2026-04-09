@@ -1,136 +1,64 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
-import { Subscription } from '../types';
+import React from 'react';
+import { Calendar } from 'lucide-react';
+import { Subscription, getEffectiveTotalCost } from '../types';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
+import { formatCurrency } from '../lib/utils';
 
 interface GoogleCalendarSyncProps {
   subscriptions: Subscription[];
 }
 
-const GOOGLE_CLIENT_ID = (import.meta as any).env.VITE_GOOGLE_CLIENT_ID || '';
-
 export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const [errorMessage, setErrorMessage] = useState('');
 
-  const syncToCalendar = async (accessToken: string) => {
-    setIsSyncing(true);
-    setSyncStatus('idle');
-    setErrorMessage('');
+  const generateGenericICS = () => {
+    let icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nCALSCALE:GREGORIAN\n`;
+    const now = new Date();
 
-    try {
-      const now = new Date();
-      
-      for (const sub of subscriptions) {
-        // Calculate next payment date
-        const dueDate = new Date(now.getFullYear(), now.getMonth(), sub.dueDate);
-        if (dueDate < now) {
-          dueDate.setMonth(dueDate.getMonth() + 1);
-        }
-
-        const start = dueDate.toISOString();
-        const end = new Date(dueDate.getTime() + 60 * 60 * 1000).toISOString(); // 1 hour duration
-
-        const event = {
-          summary: `${sub.name} will be pay today`,
-          description: `Lembrete criado pelo app\nCusto: ${sub.costAmount} ${sub.costCurrency}`,
-          start: { dateTime: start },
-          end: { dateTime: end },
-          reminders: {
-            useDefault: false,
-            overrides: [
-              { method: 'popup', minutes: 10 }
-            ]
-          }
-        };
-
-        const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(event)
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to create event');
-        }
+    // Support all active subscriptions
+    subscriptions.filter(s => s.status !== 'cancelled').forEach(sub => {
+      const dueDate = new Date(now.getFullYear(), now.getMonth(), sub.dueDate);
+      if (dueDate < now) {
+        dueDate.setMonth(dueDate.getMonth() + 1);
       }
 
-      setSyncStatus('success');
-      setTimeout(() => setSyncStatus('idle'), 5000);
-    } catch (error) {
-      console.error('Error syncing to calendar:', error);
-      setSyncStatus('error');
-      setErrorMessage(error instanceof Error ? error.message : 'Unknown error');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
+      const start = dueDate.toISOString().replace(/-|:|\.\d+/g, '');
+      const end = new Date(dueDate.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
 
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'GOOGLE_OAUTH_SUCCESS' && event.data.token) {
-        syncToCalendar(event.data.token);
-      } else if (event.data?.type === 'GOOGLE_OAUTH_ERROR') {
-        setSyncStatus('error');
-        setErrorMessage('Login failed');
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [subscriptions]);
+      icsContent += `BEGIN:VEVENT\n`;
+      icsContent += `DTSTART:${start}\n`;
+      icsContent += `DTEND:${end}\n`;
+      icsContent += `SUMMARY:BoaWallet: ${sub.name}\n`;
+      icsContent += `DESCRIPTION:Cost: ${formatCurrency(getEffectiveTotalCost(sub).amount, getEffectiveTotalCost(sub).currency)}. ${sub.notes ? `\\n\\nNotes: ${sub.notes}` : ''}\n`;
+      icsContent += `RRULE:FREQ=${sub.billingCycle === 'Monthly' ? 'MONTHLY' : 'YEARLY'}\n`;
+      icsContent += `END:VEVENT\n`;
+    });
 
-  const handleConnect = () => {
-    if (!GOOGLE_CLIENT_ID) {
-      setSyncStatus('error');
-      setErrorMessage('Client ID not configured');
-      return;
-    }
+    icsContent += `END:VCALENDAR`;
 
-    const redirectUri = `${window.location.origin}/oauth-callback.html`;
-    const scope = encodeURIComponent('https://www.googleapis.com/auth/calendar.events');
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${redirectUri}&response_type=token&scope=${scope}`;
-    
-    window.open(authUrl, 'oauth_popup', 'width=600,height=700');
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = window.URL.createObjectURL(blob);
+    link.setAttribute('download', `boawallet_calendario.ics`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
     <div className="flex flex-col items-end gap-2">
       <button
-        onClick={handleConnect}
-        disabled={isSyncing || subscriptions.length === 0 || !GOOGLE_CLIENT_ID}
-        title={!GOOGLE_CLIENT_ID ? "Google Client ID not configured" : ""}
+        onClick={generateGenericICS}
+        disabled={subscriptions.length === 0}
         className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {isSyncing ? (
-          <Loader2 size={16} className="animate-spin" />
-        ) : (
-          <Calendar size={16} className={!GOOGLE_CLIENT_ID ? "text-gray-400" : "text-blue-500"} />
-        )}
+        <Calendar size={16} className="text-emerald-500" />
         <span className="hidden sm:inline">
-          {isSyncing ? t('app.syncing' as any) || 'Sincronizando...' : t('app.connectCalendar' as any) || 'Conectar Google Calendar'}
+          {language === 'pt' ? 'Sincronizar (Proton/Apple Sync)' : 'Export Sync ICS'}
         </span>
       </button>
-
-      {syncStatus === 'success' && (
-        <div className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-          <CheckCircle2 size={14} />
-          <span>{t('app.syncSuccess' as any) || 'Sincronizado com sucesso!'}</span>
-        </div>
-      )}
-      
-      {syncStatus === 'error' && (
-        <div className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
-          <AlertCircle size={14} />
-          <span>{errorMessage || 'Erro ao sincronizar'}</span>
-        </div>
-      )}
     </div>
   );
 }

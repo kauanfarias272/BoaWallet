@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">BoaWallet</string>
+    <string name="title_activity_main">BoaWallet</string>
+    <string name="package_name">io.boa.wallet</string>
+    <string name="custom_url_scheme">io.boa.wallet</string>
+</resources>
