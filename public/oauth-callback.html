@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Authenticating...</title>
+</head>
+<body>
+  <script>
+    const hash = window.location.hash.substring(1);
+    const params = new URLSearchParams(hash);
+    const accessToken = params.get('access_token');
+    
+    if (accessToken && window.opener) {
+      window.opener.postMessage({ type: 'GOOGLE_OAUTH_SUCCESS', token: accessToken }, '*');
+      window.close();
+    } else if (window.opener) {
+      window.opener.postMessage({ type: 'GOOGLE_OAUTH_ERROR' }, '*');
+      window.close();
+    } else {
+      document.body.innerHTML = 'Authentication failed or window opener not found.';
+    }
+  </script>
+</body>
+</html>

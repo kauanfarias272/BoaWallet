@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Language } from './i18n';
 import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
+import { auth } from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+
+export type Gender = 'M' | 'F' | 'N';
 
 interface AppContextType {
   language: Language;
@@ -8,6 +12,12 @@ interface AppContextType {
   theme: 'light' | 'dark';
   setTheme: (theme: 'light' | 'dark') => void;
   exchangeRates: Record<Currency, number>;
+  userName: string;
+  setUserName: (name: string) => void;
+  gender: Gender;
+  setGender: (gender: Gender) => void;
+  user: User | null;
+  authLoading: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -24,13 +34,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguage] = useState<Language>(getBrowserLanguage());
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [exchangeRates, setExchangeRates] = useState<Record<Currency, number>>(DEFAULT_EXCHANGE_RATES);
+  const [userName, setUserName] = useState<string>(() => localStorage.getItem('userName') || '');
+  const [gender, setGender] = useState<Gender>(() => (localStorage.getItem('userGender') as Gender) || 'N');
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser?.displayName && !userName) {
+        setUserName(currentUser.displayName);
+      }
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, [userName]);
+
+  useEffect(() => {
+    localStorage.setItem('userName', userName);
+  }, [userName]);
+
+  useEffect(() => {
+    localStorage.setItem('userGender', gender);
+  }, [gender]);
+
+  useEffect(() => {
+    document.documentElement.classList.add('dark');
   }, [theme]);
 
   // Fetch real-time exchange rates
@@ -58,6 +87,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // Update BTC rate (1 USD = X BTC)
           const btcPriceInUsd = btcData.bitcoin.usd;
           newRates['BTC'] = 1 / btcPriceInUsd;
+          newRates['SATS'] = (1 / btcPriceInUsd) * 100000000;
           
           setExchangeRates(newRates);
         }
@@ -73,7 +103,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AppContext.Provider value={{ language, setLanguage, theme, setTheme, exchangeRates }}>
+    <AppContext.Provider value={{ language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading }}>
       {children}
     </AppContext.Provider>
   );

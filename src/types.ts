@@ -1,4 +1,4 @@
-export type Currency = 'BRL' | 'USD' | 'EUR' | 'GBP' | 'JPY' | 'TRY' | 'ARS' | 'INR' | 'IDR' | 'CAD' | 'AUD' | 'CHF' | 'CNY' | 'MXN' | 'BTC';
+export type Currency = 'BRL' | 'USD' | 'EUR' | 'GBP' | 'JPY' | 'TRY' | 'ARS' | 'INR' | 'IDR' | 'CAD' | 'AUD' | 'CHF' | 'CNY' | 'MXN' | 'BTC' | 'SATS';
 
 export type PaymentMethod = 'Cartão de Crédito' | 'Cartão de Débito' | 'Gift Card' | 'Pix' | 'Transferência' | 'Outro';
 export type PaymentSource = 'Revolut' | 'N26' | 'Nubank' | 'Wise' | 'Inter' | 'Intesa Sanpaolo' | 'Outro';
@@ -59,6 +59,7 @@ export const DEFAULT_EXCHANGE_RATES: Record<Currency, number> = {
   CNY: 7.23,
   MXN: 16.50,
   BTC: 0.000015, // Fallback
+  SATS: 1500,
 };
 
 export const CURRENCY_SYMBOLS: Record<Currency, string> = {
@@ -77,6 +78,7 @@ export const CURRENCY_SYMBOLS: Record<Currency, string> = {
   CNY: '¥',
   MXN: '$',
   BTC: '₿',
+  SATS: '₿',
 };
 
 export const convertCurrency = (amount: number, from: Currency, to: Currency, rates: Record<Currency, number> = DEFAULT_EXCHANGE_RATES): number => {

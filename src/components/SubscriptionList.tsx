@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, CalendarPlus } from 'lucide-react';
+import { Edit2, Trash2, CalendarPlus, X } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 
@@ -16,6 +16,7 @@ interface SubscriptionListProps {
 export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete }: SubscriptionListProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
+  const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
 
   // Sort by due date
   const sortedSubs = [...subscriptions].sort((a, b) => a.dueDate - b.dueDate);
@@ -51,24 +52,24 @@ END:VCALENDAR`;
   };
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden transition-colors">
-      <div className="p-6 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
-        <h3 className="text-lg font-medium text-gray-900 dark:text-white">{t('list.title')}</h3>
+    <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 overflow-hidden transition-colors">
+      <div className="p-6 border-b border-gray-100/50 dark:border-gray-800/50 flex justify-between items-center">
+        <h3 className="text-xl font-serif font-medium text-gray-900 dark:text-white">{t('list.title')}</h3>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="bg-gray-50/50 dark:bg-gray-800/50 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            <tr className="bg-[#fdfbf7] dark:bg-[#121212] text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
               <th className="p-4 font-medium">{t('list.service')}</th>
               <th className="p-4 font-medium">{t('list.dueDate')}</th>
-              <th className="p-4 font-medium">{t('list.originalCost')}</th>
-              <th className="p-4 font-medium">{t('list.return')}</th>
+              <th className="p-4 font-medium hidden md:table-cell">{t('list.originalCost')}</th>
+              <th className="p-4 font-medium hidden lg:table-cell">{t('list.return')}</th>
               <th className="p-4 font-medium">{t('list.netCost')} ({baseCurrency})</th>
-              <th className="p-4 font-medium">{t('list.payment')}</th>
-              <th className="p-4 font-medium text-right">{t('list.actions')}</th>
+              <th className="p-4 font-medium hidden sm:table-cell">{t('list.payment')}</th>
+              <th className="p-4 font-medium text-right hidden sm:table-cell">{t('list.actions')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+          <tbody className="divide-y divide-gray-100/50 dark:divide-gray-800/50">
             {sortedSubs.map((sub) => {
               const subTotalCost = getSubscriptionTotalCost(sub);
               const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
@@ -91,31 +92,38 @@ END:VCALENDAR`;
 
               return (
                 <React.Fragment key={sub.id}>
-                  <tr className="hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition-colors group">
+                  <tr 
+                    className="hover:bg-[#fdfbf7] dark:hover:bg-[#222] transition-colors group cursor-pointer sm:cursor-default"
+                    onClick={() => {
+                      if (window.innerWidth < 640) {
+                        setSelectedSub(sub);
+                      }
+                    }}
+                  >
                     <td className="p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xl overflow-hidden shrink-0">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-full bg-[#fdfbf7] dark:bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
                           {sub.logoUrl ? (
                             <img src={sub.logoUrl} alt={sub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
                           ) : (
                             sub.emoji
                           )}
                         </div>
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                        <div className="hidden sm:block">
+                          <p className="font-medium text-gray-900 dark:text-white flex items-center gap-2 text-base">
                             {sub.name}
                             {sub.type === 'FixedExpense' && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f5f5f0] text-[#5A5A40] dark:bg-[#2a2a20] dark:text-[#d0d0a0]">
                                 {t('form.typeFixedExpense')}
                               </span>
                             )}
                             {sub.subItems && sub.subItems.length > 0 && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
                                 +{sub.subItems.length}
                               </span>
                             )}
                           </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{sub.category}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any)}</p>
                         </div>
                       </div>
                     </td>
@@ -125,7 +133,7 @@ END:VCALENDAR`;
                         <span className="text-xs text-gray-500 dark:text-gray-400">{sub.billingCycle === 'Monthly' ? t('form.monthly') : t('form.yearly')}</span>
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="p-4 hidden md:table-cell">
                       <div className="flex flex-col">
                         <span className="text-sm font-medium text-gray-900 dark:text-gray-300">
                           {formatCurrency(subTotalCost, sub.costCurrency)}
@@ -137,7 +145,7 @@ END:VCALENDAR`;
                         )}
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="p-4 hidden lg:table-cell">
                       <div className="flex flex-col gap-1">
                         {sub.hasIncome && (
                           <div className="flex items-center gap-1">
@@ -147,9 +155,12 @@ END:VCALENDAR`;
                           </div>
                         )}
                         {sub.hasCashback && (
-                          <div className="flex items-center gap-1">
-                            <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 rounded w-fit">
                               {sub.cashbackPercentage}% CB
+                            </span>
+                            <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                              {formatCurrency(cashbackInBase, baseCurrency)}
                             </span>
                           </div>
                         )}
@@ -163,20 +174,20 @@ END:VCALENDAR`;
                         {formatCurrency(netCostInBase, baseCurrency)}
                       </span>
                     </td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
-                        {sub.bankLogoUrl && sub.paymentSource !== 'Outro' && (
-                          <img src={sub.bankLogoUrl} alt={sub.paymentSource} referrerPolicy="no-referrer" className="w-5 h-5 rounded-full bg-white object-cover" />
-                        )}
-                        <div className="flex flex-col gap-1 items-start">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-300">
-                            {sub.paymentMethod}
-                          </span>
+                    <td className="p-4 hidden sm:table-cell">
+                      <div className="flex flex-col gap-1 items-start">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-[#fdfbf7] dark:bg-[#222] text-gray-800 dark:text-gray-300 border border-gray-100 dark:border-gray-800">
+                          {t(`pay.${sub.paymentMethod}` as any) === `pay.${sub.paymentMethod}` ? sub.paymentMethod : t(`pay.${sub.paymentMethod}` as any)}
+                        </span>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          {sub.bankLogoUrl && sub.paymentSource !== 'Outro' && (
+                            <img src={sub.bankLogoUrl} alt={sub.paymentSource} referrerPolicy="no-referrer" className="w-4 h-4 rounded-full bg-white object-cover" />
+                          )}
                           <span className="text-xs text-gray-500 dark:text-gray-400">{sub.paymentSource}</span>
                         </div>
                       </div>
                     </td>
-                    <td className="p-4 text-right">
+                    <td className="p-4 text-right hidden sm:table-cell">
                       <div className="flex items-center justify-end gap-2">
                         <button 
                           onClick={() => generateICS(sub)}
@@ -201,9 +212,9 @@ END:VCALENDAR`;
                     </td>
                   </tr>
                   {sub.subItems && sub.subItems.length > 0 && (
-                    <tr className="bg-gray-50/30 dark:bg-gray-800/20">
+                    <tr className="bg-[#fdfbf7]/50 dark:bg-[#121212]/50">
                       <td colSpan={7} className="p-0">
-                        <div className="pl-16 pr-4 py-3 border-t border-gray-50 dark:border-gray-800/50">
+                        <div className="pl-20 pr-4 py-3 border-t border-gray-50 dark:border-gray-800/50">
                           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wider">{t('list.subItems')}:</div>
                           <div className="space-y-2">
                             {sub.subItems.map(item => (
@@ -233,6 +244,59 @@ END:VCALENDAR`;
           </tbody>
         </table>
       </div>
+
+      {/* Mobile Actions Modal */}
+      {selectedSub && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 sm:hidden" onClick={() => setSelectedSub(null)}>
+          <div 
+            className="bg-[#1a1a1a] w-full max-w-sm rounded-3xl p-6 border border-gray-800 animate-in zoom-in-95 duration-200 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
+                  {selectedSub.logoUrl ? (
+                    <img src={selectedSub.logoUrl} alt={selectedSub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
+                  ) : (
+                    selectedSub.emoji
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium text-white">{selectedSub.name}</h3>
+                  <p className="text-sm text-gray-400">{formatCurrency(getSubscriptionTotalCost(selectedSub), selectedSub.costCurrency)}</p>
+                </div>
+              </div>
+              <button onClick={() => setSelectedSub(null)} className="p-2 text-gray-400 hover:text-white bg-[#222] rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-3">
+              <button 
+                onClick={() => { generateICS(selectedSub); setSelectedSub(null); }}
+                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-emerald-400 hover:bg-[#2a2a2a] transition-colors"
+              >
+                <CalendarPlus size={24} />
+                <span className="text-xs font-medium">Lembrete</span>
+              </button>
+              <button 
+                onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
+                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"
+              >
+                <Edit2 size={24} />
+                <span className="text-xs font-medium">Editar</span>
+              </button>
+              <button 
+                onClick={() => { onDelete(selectedSub.id); setSelectedSub(null); }}
+                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-red-400 hover:bg-[#2a2a2a] transition-colors"
+              >
+                <Trash2 size={24} />
+                <span className="text-xs font-medium">Remover</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "language": { "type": "string" },
+        "baseCurrency": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "A subscription or fixed expense",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["Subscription", "FixedExpense"] },
+        "category": { "type": "string" },
+        "costAmount": { "type": "number" },
+        "costCurrency": { "type": "string" },
+        "billingCycle": { "type": "string", "enum": ["Monthly", "Yearly"] },
+        "dueDate": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "paymentSource": { "type": "string" },
+        "emoji": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "bankLogoUrl": { "type": "string" },
+        "hasCashback": { "type": "boolean" },
+        "cashbackPercentage": { "type": "number" },
+        "hasIncome": { "type": "boolean" },
+        "incomeAmount": { "type": "number" },
+        "incomeCurrency": { "type": "string" },
+        "incomeFrequency": { "type": "string", "enum": ["Monthly", "Yearly"] },
+        "incomeDescription": { "type": "string" },
+        "subItems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "costAmount": { "type": "number" }
+            }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "type", "category", "costAmount", "costCurrency", "billingCycle", "dueDate", "paymentMethod", "paymentSource", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "/users/{userId}/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/Subscription" },
+      "description": "User's subscriptions"
+    }
+  }
+}

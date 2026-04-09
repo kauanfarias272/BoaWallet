@@ -12,7 +12,7 @@ interface SubscriptionFormProps {
 
 const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC'];
 const PAYMENT_METHODS: PaymentMethod[] = ['Cartão de Crédito', 'Cartão de Débito', 'Gift Card', 'Pix', 'Transferência', 'Outro'];
-const PAYMENT_SOURCES = ['Revolut', 'N26', 'Nubank', 'Wise', 'Inter', 'Intesa Sanpaolo', 'Chase', 'Bank of America', 'Wells Fargo', 'Santander', 'Itaú', 'Bradesco', 'Caixa', 'Banco do Brasil', 'C6 Bank', 'Neon', 'Next', 'PicPay', 'Mercado Pago', 'PayPal', 'Stripe', 'Outro'];
+const PAYMENT_SOURCES = ['Revolut', 'N26', 'Nubank', 'Wise', 'Inter', 'Intesa Sanpaolo', 'Chase', 'Bank of America', 'Wells Fargo', 'Santander', 'Itaú', 'Bradesco', 'Caixa', 'Banco do Brasil', 'C6 Bank', 'Neon', 'Next', 'PicPay', 'Mercado Pago', 'PayPal', 'Stripe', 'Izybank', 'BBVA', 'Buddybank', 'Monzo', 'Starling', 'Outro'];
 const CATEGORIES = ['Streaming', 'Software', 'Games', 'Assinaturas', 'Utilidades', 'Educação', 'Moradia', 'Saúde', 'Outros'];
 
 const POPULAR_APPS = [
@@ -69,6 +69,11 @@ const BANK_LOGOS: Record<string, string> = {
   'Mercado Pago': 'https://www.google.com/s2/favicons?domain=mercadopago.com.br&sz=128',
   'PayPal': 'https://www.google.com/s2/favicons?domain=paypal.com&sz=128',
   'Stripe': 'https://www.google.com/s2/favicons?domain=stripe.com&sz=128',
+  'Izybank': 'https://www.google.com/s2/favicons?domain=izybank.com.br&sz=128',
+  'BBVA': 'https://www.google.com/s2/favicons?domain=bbva.com&sz=128',
+  'Buddybank': 'https://www.google.com/s2/favicons?domain=buddybank.com&sz=128',
+  'Monzo': 'https://www.google.com/s2/favicons?domain=monzo.com&sz=128',
+  'Starling': 'https://www.google.com/s2/favicons?domain=starlingbank.com&sz=128',
 };
 
 export function SubscriptionForm({ subscription, onSave, onClose }: SubscriptionFormProps) {
@@ -100,6 +105,21 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
 
   const [customPaymentSource, setCustomPaymentSource] = useState('');
   const [isAppDropdownOpen, setIsAppDropdownOpen] = useState(false);
+  const [suggestedLogo, setSuggestedLogo] = useState('');
+
+  useEffect(() => {
+    if (formData.name && formData.name.length > 2 && !formData.logoUrl) {
+      const cleanName = formData.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      let domain = `${cleanName}.com`;
+      if (cleanName === 'anhanguera') domain = 'anhanguera.com';
+      else if (cleanName === 'usp') domain = 'usp.br';
+      else if (cleanName === 'nubank') domain = 'nubank.com.br';
+      
+      setSuggestedLogo(`https://www.google.com/s2/favicons?domain=${domain}&sz=128`);
+    } else {
+      setSuggestedLogo('');
+    }
+  }, [formData.name, formData.logoUrl]);
 
   useEffect(() => {
     if (subscription) {
@@ -172,9 +192,9 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
 
   return (
     <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-3xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transition-colors">
-        <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 p-6 flex justify-between items-center z-10 rounded-t-3xl transition-colors">
-          <h2 className="text-xl font-medium text-gray-900 dark:text-white">
+      <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transition-colors">
+        <div className="sticky top-0 bg-white dark:bg-[#1a1a1a] border-b border-gray-100/50 dark:border-gray-800/50 p-6 flex justify-between items-center z-10 rounded-t-2xl transition-colors">
+          <h2 className="text-2xl font-serif font-medium text-gray-900 dark:text-white">
             {subscription ? t('form.edit') : t('form.new')}
           </h2>
           <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors">
@@ -194,7 +214,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="type"
                   value={formData.type || 'Subscription'}
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 >
                   <option value="Subscription">{t('form.typeSubscription') || 'Assinatura'}</option>
                   <option value="FixedExpense">{t('form.typeFixedExpense') || 'Despesa Fixa (ex: Faculdade)'}</option>
@@ -203,19 +223,19 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
               <div className="space-y-1 relative">
                 <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.popularApp')}</label>
                 <div 
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer flex items-center justify-between dark:text-white transition-all hover:bg-gray-100 dark:hover:bg-gray-700"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer flex items-center justify-between dark:text-white transition-all hover:bg-gray-100 dark:hover:bg-gray-700"
                   onClick={() => setIsAppDropdownOpen(!isAppDropdownOpen)}
                 >
                   <span className="text-gray-600 dark:text-gray-300">{t('form.selectApp')}</span>
                   <ChevronDown size={16} className={`text-gray-500 transition-transform ${isAppDropdownOpen ? 'rotate-180' : ''}`} />
                 </div>
                 {isAppDropdownOpen && (
-                  <div className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                  <div className="absolute z-20 w-full mt-1 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-2">
                       {POPULAR_APPS.map(app => (
                         <div 
                           key={app.name}
-                          className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg cursor-pointer transition-colors"
+                          className="flex items-center gap-3 px-3 py-2 hover:bg-[#fdfbf7] dark:hover:bg-[#2a2a2a] rounded-lg cursor-pointer transition-colors"
                           onClick={() => {
                             setFormData(prev => ({ ...prev, name: app.name, logoUrl: app.logo }));
                             setIsAppDropdownOpen(false);
@@ -240,24 +260,36 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   required
                   value={formData.name} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   placeholder="Ex: YouTube Premium"
                 />
               </div>
               <div className="flex gap-4">
-                <div className="space-y-1 w-24">
+                <div className="space-y-1 w-full sm:w-auto">
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.emoji')}</label>
-                  <div className="relative">
+                  <div className="flex items-center gap-3">
                     {formData.logoUrl ? (
-                      <img src={formData.logoUrl} alt="Logo" referrerPolicy="no-referrer" className="w-full h-10 object-cover rounded-xl border border-gray-200 dark:border-gray-700 bg-white" />
+                      <div className="relative group">
+                        <img src={formData.logoUrl} alt="Logo" referrerPolicy="no-referrer" className="w-12 h-12 object-cover rounded-xl border border-gray-200 dark:border-gray-700 bg-white" />
+                        <button type="button" onClick={() => setFormData(prev => ({...prev, logoUrl: ''}))} className="absolute -top-2 -right-2 bg-red-100 text-red-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"><X size={12}/></button>
+                      </div>
                     ) : (
                       <input 
                         type="text" 
                         name="emoji" 
                         value={formData.emoji} 
                         onChange={handleChange}
-                        className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-center dark:text-white"
+                        className="w-12 h-12 px-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all text-center text-xl dark:text-white"
                       />
+                    )}
+                    
+                    {suggestedLogo && !formData.logoUrl && (
+                      <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 rounded-xl border border-blue-100 dark:border-blue-800">
+                        <span className="text-xs text-blue-600 dark:text-blue-400">Sugestão:</span>
+                        <button type="button" onClick={() => setFormData(prev => ({...prev, logoUrl: suggestedLogo}))} className="hover:opacity-80 transition-opacity">
+                          <img src={suggestedLogo} alt="Suggested" className="w-8 h-8 rounded-full bg-white object-cover" referrerPolicy="no-referrer" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -267,7 +299,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                     name="category" 
                     value={formData.category} 
                     onChange={handleChange}
-                    className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   >
                     {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
@@ -289,7 +321,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   required
                   value={formData.costAmount} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 />
               </div>
               <div className="space-y-1">
@@ -298,7 +330,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="costCurrency" 
                   value={formData.costCurrency} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 >
                   {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
@@ -309,7 +341,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="billingCycle" 
                   value={formData.billingCycle} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 >
                   <option value="Monthly">{t('form.monthly')}</option>
                   <option value="Yearly">{t('form.yearly')}</option>
@@ -324,7 +356,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   required
                   value={formData.dueDate} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 />
               </div>
               <div className="space-y-1">
@@ -333,7 +365,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="paymentMethod" 
                   value={formData.paymentMethod} 
                   onChange={handleChange}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 >
                   {PAYMENT_METHODS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
@@ -349,7 +381,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       name="paymentSource" 
                       value={formData.paymentSource} 
                       onChange={handleChange}
-                      className="flex-1 px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                      className="flex-1 px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                     >
                       {PAYMENT_SOURCES.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
@@ -360,7 +392,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       placeholder={t('form.customPaymentSource') || 'Digite o nome do banco/fonte...'}
                       value={customPaymentSource}
                       onChange={(e) => setCustomPaymentSource(e.target.value)}
-                      className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white mt-2"
+                      className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white mt-2"
                     />
                   )}
                 </div>
@@ -378,7 +410,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
               <button 
                 type="button" 
                 onClick={handleAddSubItem}
-                className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium"
+                className="flex items-center gap-1 text-sm text-[#5A5A40] dark:text-[#d0d0a0] hover:text-[#4a4a34] dark:hover:text-[#e0e0b0] font-medium"
               >
                 <Plus size={16} /> {t('form.addSubItem')}
               </button>
@@ -387,13 +419,13 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
             {formData.subItems && formData.subItems.length > 0 && (
               <div className="space-y-3">
                 {formData.subItems.map((item, index) => (
-                  <div key={item.id} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800/50 p-3 rounded-xl border border-gray-200 dark:border-gray-700">
+                  <div key={item.id} className="flex items-center gap-3 bg-[#fdfbf7] dark:bg-[#121212] p-3 rounded-xl border border-gray-200 dark:border-gray-700">
                     <input 
                       type="text" 
                       placeholder="Nome do sub-item"
                       value={item.name}
                       onChange={(e) => handleSubItemChange(item.id, 'name', e.target.value)}
-                      className="flex-1 px-3 py-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white"
+                      className="flex-1 px-3 py-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#5A5A40] dark:text-white"
                     />
                     <div className="relative w-32">
                       <input 
@@ -402,7 +434,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                         placeholder="Valor"
                         value={item.costAmount}
                         onChange={(e) => handleSubItemChange(item.id, 'costAmount', parseFloat(e.target.value) || 0)}
-                        className="w-full pl-8 pr-3 py-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white"
+                        className="w-full pl-8 pr-3 py-1.5 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#5A5A40] dark:text-white"
                       />
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 text-xs font-medium">
                         {formData.costCurrency}
@@ -429,22 +461,22 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                 name="hasCashback"
                 checked={formData.hasCashback}
                 onChange={handleChange}
-                className="w-5 h-5 text-blue-600 rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-blue-500"
+                className="w-5 h-5 text-[#5A5A40] rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-[#5A5A40]"
               />
               <span className="text-sm font-medium text-gray-900 dark:text-gray-200">{t('form.hasCashback')}</span>
             </label>
 
             {formData.hasCashback && (
-              <div className="p-4 bg-blue-50/50 dark:bg-blue-900/20 rounded-2xl border border-blue-100 dark:border-blue-800/50">
+              <div className="p-4 bg-[#fdfbf7] dark:bg-[#121212] rounded-2xl border border-gray-200 dark:border-gray-700">
                 <div className="space-y-1 max-w-xs">
-                  <label className="text-sm font-medium text-blue-800 dark:text-blue-300">{t('form.cashbackPercentage')}</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.cashbackPercentage')}</label>
                   <input 
                     type="number" 
                     name="cashbackPercentage" 
                     step="0.1"
                     value={formData.cashbackPercentage} 
                     onChange={handleChange}
-                    className="w-full px-4 py-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   />
                 </div>
               </div>
@@ -459,56 +491,56 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                 name="hasIncome"
                 checked={formData.hasIncome}
                 onChange={handleChange}
-                className="w-5 h-5 text-blue-600 rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-blue-500"
+                className="w-5 h-5 text-[#5A5A40] rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-[#5A5A40]"
               />
               <span className="text-sm font-medium text-gray-900 dark:text-gray-200">{t('form.hasIncome')}</span>
             </label>
 
             {formData.hasIncome && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-emerald-50/50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-800/50">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-[#fdfbf7] dark:bg-[#121212] rounded-2xl border border-gray-200 dark:border-gray-700">
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-800 dark:text-emerald-300">{t('form.incomeAmount')}</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.incomeAmount')}</label>
                   <input 
                     type="number" 
                     name="incomeAmount" 
                     step="0.01"
                     value={formData.incomeAmount} 
                     onChange={handleChange}
-                    className="w-full px-4 py-2 bg-white dark:bg-gray-800 border border-emerald-200 dark:border-emerald-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-800 dark:text-emerald-300">{t('form.currency')}</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.currency')}</label>
                   <select 
                     name="incomeCurrency" 
                     value={formData.incomeCurrency} 
                     onChange={handleChange}
-                    className="w-full px-4 py-2 bg-white dark:bg-gray-800 border border-emerald-200 dark:border-emerald-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   >
                     {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-emerald-800 dark:text-emerald-300">{t('form.cycle')}</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.cycle')}</label>
                   <select 
                     name="incomeFrequency" 
                     value={formData.incomeFrequency} 
                     onChange={handleChange}
-                    className="w-full px-4 py-2 bg-white dark:bg-gray-800 border border-emerald-200 dark:border-emerald-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   >
                     <option value="Monthly">{t('form.monthly')}</option>
                     <option value="Yearly">{t('form.yearly')}</option>
                   </select>
                 </div>
                 <div className="space-y-1 md:col-span-3">
-                  <label className="text-sm font-medium text-emerald-800 dark:text-emerald-300">{t('form.incomeDesc')}</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.incomeDesc')}</label>
                   <input 
                     type="text" 
                     name="incomeSourceDescription" 
                     value={formData.incomeSourceDescription} 
                     onChange={handleChange}
                     placeholder="Ex: 5 amigos pagam 10 euros cada"
-                    className="w-full px-4 py-2 bg-white dark:bg-gray-800 border border-emerald-200 dark:border-emerald-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   />
                 </div>
               </div>
@@ -519,13 +551,13 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
             <button 
               type="button" 
               onClick={onClose}
-              className="px-6 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl transition-colors"
+              className="px-6 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-[#fdfbf7] dark:bg-[#121212] hover:bg-gray-200 dark:hover:bg-gray-800 rounded-full transition-colors"
             >
               {t('form.cancel')}
             </button>
             <button 
               type="submit"
-              className="px-6 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors shadow-sm shadow-blue-200 dark:shadow-none"
+              className="px-6 py-2.5 text-sm font-medium text-white bg-[#5A5A40] hover:bg-[#4a4a34] rounded-full transition-colors shadow-sm dark:bg-[#7a7a5c] dark:hover:bg-[#8a8a6c]"
             >
               {t('form.save')}
             </button>

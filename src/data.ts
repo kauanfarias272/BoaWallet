@@ -12,7 +12,7 @@ export const INITIAL_SUBSCRIPTIONS: Subscription[] = [
     billingCycle: 'Monthly',
     dueDate: 15,
     subItems: [],
-    paymentMethod: 'Cartão de Crédito',
+    paymentMethod: 'Credit Card',
     paymentSource: 'Revolut',
     bankLogoUrl: 'https://www.google.com/s2/favicons?domain=revolut.com&sz=128',
     hasCashback: false,
@@ -34,10 +34,10 @@ export const INITIAL_SUBSCRIPTIONS: Subscription[] = [
     billingCycle: 'Monthly',
     dueDate: 5,
     subItems: [
-      { id: '2-1', name: 'Clube de Canais (Tech)', costAmount: 7.99 },
-      { id: '2-2', name: 'Clube de Canais (Games)', costAmount: 4.99 }
+      { id: '2-1', name: 'Channel Membership (Tech)', costAmount: 7.99 },
+      { id: '2-2', name: 'Channel Membership (Games)', costAmount: 4.99 }
     ],
-    paymentMethod: 'Cartão de Crédito',
+    paymentMethod: 'Credit Card',
     paymentSource: 'Nubank',
     bankLogoUrl: 'https://www.google.com/s2/favicons?domain=nubank.com.br&sz=128',
     hasCashback: true,
@@ -59,7 +59,7 @@ export const INITIAL_SUBSCRIPTIONS: Subscription[] = [
     billingCycle: 'Monthly',
     dueDate: 22,
     subItems: [],
-    paymentMethod: 'Cartão de Crédito',
+    paymentMethod: 'Credit Card',
     paymentSource: 'Wise',
     bankLogoUrl: 'https://www.google.com/s2/favicons?domain=wise.com&sz=128',
     hasCashback: false,

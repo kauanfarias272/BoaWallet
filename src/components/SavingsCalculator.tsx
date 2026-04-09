@@ -59,19 +59,19 @@ export function SavingsCalculator({ subscriptions, baseCurrency, exchangeRates }
   }, [subscriptions, selectedIds, baseCurrency, exchangeRates]);
 
   return (
-    <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-800 transition-colors">
+    <div className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors">
       <div className="flex items-center gap-3 mb-6">
-        <div className="p-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl">
+        <div className="p-2 bg-[#f5f5f0] dark:bg-[#2a2a20] text-[#5A5A40] dark:text-[#d0d0a0] rounded-xl">
           <Calculator size={24} />
         </div>
         <div>
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white">{t('calc.title')}</h3>
+          <h3 className="text-xl font-serif font-medium text-gray-900 dark:text-white">{t('calc.title')}</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400">{t('calc.subtitle')}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
+        <div className="space-y-2 max-h-[300px] lg:max-h-[400px] overflow-y-auto pr-2">
           {subscriptions.map(sub => {
             const subTotalCost = getSubscriptionTotalCost(sub);
             return (
@@ -79,13 +79,13 @@ export function SavingsCalculator({ subscriptions, baseCurrency, exchangeRates }
                 key={sub.id} 
                 className={`flex items-center p-3 rounded-xl border cursor-pointer transition-colors ${
                   selectedIds.has(sub.id) 
-                    ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800' 
-                    : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                    ? 'bg-[#fdfbf7] dark:bg-[#222] border-[#5A5A40]/30 dark:border-[#8a8a6c]/30' 
+                    : 'bg-white dark:bg-[#1a1a1a] border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50'
                 }`}
               >
                 <input 
                   type="checkbox" 
-                  className="w-4 h-4 text-blue-600 rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-blue-500"
+                  className="w-4 h-4 text-[#5A5A40] rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-[#5A5A40]"
                   checked={selectedIds.has(sub.id)}
                   onChange={() => toggleSelection(sub.id)}
                 />
@@ -110,18 +110,18 @@ export function SavingsCalculator({ subscriptions, baseCurrency, exchangeRates }
           )}
         </div>
 
-        <div className="bg-gray-50 dark:bg-gray-800/50 rounded-2xl p-6 flex flex-col justify-center transition-colors">
+        <div className="bg-[#fdfbf7] dark:bg-[#121212] rounded-2xl p-6 flex flex-col justify-center transition-colors border border-gray-100/50 dark:border-gray-800/50 min-h-[200px]">
           <div className="text-center space-y-6">
             <div>
               <p className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('calc.monthlySavings')}</p>
-              <p className={`text-4xl font-light mt-2 ${monthlySavings > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
+              <p className={`text-4xl font-serif font-medium mt-2 ${monthlySavings > 0 ? 'text-[#5A5A40] dark:text-[#8a8a6c]' : 'text-gray-900 dark:text-white'}`}>
                 {formatCurrency(monthlySavings, baseCurrency)}
               </p>
             </div>
-            <div className="h-px bg-gray-200 dark:bg-gray-700 w-1/2 mx-auto"></div>
+            <div className="h-px bg-gray-200 dark:bg-gray-800/50 w-1/2 mx-auto"></div>
             <div>
               <p className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('calc.yearlySavings')}</p>
-              <p className={`text-4xl font-light mt-2 ${yearlySavings > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
+              <p className={`text-4xl font-serif font-medium mt-2 ${yearlySavings > 0 ? 'text-[#5A5A40] dark:text-[#8a8a6c]' : 'text-gray-900 dark:text-white'}`}>
                 {formatCurrency(yearlySavings, baseCurrency)}
               </p>
             </div>

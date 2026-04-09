@@ -1,5 +1,4 @@
-import React, { useState } from 'react';
-import { useGoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
+import React, { useState, useEffect } from 'react';
 import { Calendar, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import { Subscription } from '../types';
 import { useAppContext } from '../AppContext';
@@ -11,7 +10,7 @@ interface GoogleCalendarSyncProps {
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
-function SyncButton({ subscriptions }: GoogleCalendarSyncProps) {
+export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -74,27 +73,45 @@ function SyncButton({ subscriptions }: GoogleCalendarSyncProps) {
     }
   };
 
-  const login = useGoogleLogin({
-    onSuccess: (tokenResponse) => syncToCalendar(tokenResponse.access_token),
-    onError: (error) => {
-      console.error('Login Failed:', error);
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_OAUTH_SUCCESS' && event.data.token) {
+        syncToCalendar(event.data.token);
+      } else if (event.data?.type === 'GOOGLE_OAUTH_ERROR') {
+        setSyncStatus('error');
+        setErrorMessage('Login failed');
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [subscriptions]);
+
+  const handleConnect = () => {
+    if (!GOOGLE_CLIENT_ID) {
       setSyncStatus('error');
-      setErrorMessage('Login failed');
-    },
-    scope: 'https://www.googleapis.com/auth/calendar.events',
-  });
+      setErrorMessage('Client ID not configured');
+      return;
+    }
+
+    const redirectUri = `${window.location.origin}/oauth-callback.html`;
+    const scope = encodeURIComponent('https://www.googleapis.com/auth/calendar.events');
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${redirectUri}&response_type=token&scope=${scope}`;
+    
+    window.open(authUrl, 'oauth_popup', 'width=600,height=700');
+  };
 
   return (
     <div className="flex flex-col items-end gap-2">
       <button
-        onClick={() => login()}
-        disabled={isSyncing || subscriptions.length === 0}
+        onClick={handleConnect}
+        disabled={isSyncing || subscriptions.length === 0 || !GOOGLE_CLIENT_ID}
+        title={!GOOGLE_CLIENT_ID ? "Google Client ID not configured" : ""}
         className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isSyncing ? (
           <Loader2 size={16} className="animate-spin" />
         ) : (
-          <Calendar size={16} className="text-blue-500" />
+          <Calendar size={16} className={!GOOGLE_CLIENT_ID ? "text-gray-400" : "text-blue-500"} />
         )}
         <span className="hidden sm:inline">
           {isSyncing ? t('app.syncing') || 'Sincronizando...' : t('app.connectCalendar') || 'Conectar Google Calendar'}
@@ -115,31 +132,5 @@ function SyncButton({ subscriptions }: GoogleCalendarSyncProps) {
         </div>
       )}
     </div>
-  );
-}
-
-export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
-  const { language } = useAppContext();
-  const t = useTranslation(language);
-
-  if (!GOOGLE_CLIENT_ID) {
-    return (
-      <button
-        disabled
-        title="Google Client ID not configured"
-        className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 px-4 py-2 rounded-xl text-sm font-medium opacity-50 cursor-not-allowed"
-      >
-        <Calendar size={16} />
-        <span className="hidden sm:inline">
-          {t('app.connectCalendar') || 'Conectar Google Calendar'}
-        </span>
-      </button>
-    );
-  }
-
-  return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <SyncButton subscriptions={subscriptions} />
-    </GoogleOAuthProvider>
   );
 }
