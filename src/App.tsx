@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { SubscriptionList } from './components/SubscriptionList';
-import { SavingsCalculator } from './components/SavingsCalculator';
 import { SubscriptionForm } from './components/SubscriptionForm';
 import { GoogleCalendarSync } from './components/GoogleCalendarSync';
 import { WelcomeModal } from './components/WelcomeModal';
 import { Cashflow } from './components/Cashflow';
 import { INITIAL_SUBSCRIPTIONS } from './data';
-import { Currency, Subscription } from './types';
+import { Currency, Subscription, Adjustment, getEffectiveTotalCost } from './types';
 import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut, Download, Upload, FileText } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
@@ -29,6 +28,7 @@ const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS',
 
 export default function App() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>(INITIAL_SUBSCRIPTIONS);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [baseCurrency, setBaseCurrency] = useState<Currency>('USD');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingSub, setEditingSub] = useState<Subscription | undefined>(undefined);
@@ -58,6 +58,35 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [clickCount]);
+
+  const handleAddAdjustment = async (adjData: Omit<Adjustment, 'id'>) => {
+    const newAdj: Adjustment = { ...adjData, id: Date.now().toString() };
+    if (user) {
+      try {
+        await setDoc(doc(db, `users/${user.uid}/adjustments`, newAdj.id), newAdj);
+      } catch (error) {
+        console.error("Error adding adjustment:", error);
+      }
+    } else {
+      const updated = [...adjustments, newAdj];
+      setAdjustments(updated);
+      localStorage.setItem('boa_adjustments', JSON.stringify(updated));
+    }
+  };
+
+  const handleRemoveAdjustment = async (id: string) => {
+    if (user) {
+      try {
+        await deleteDoc(doc(db, `users/${user.uid}/adjustments`, id));
+      } catch (error) {
+        console.error("Error removing adjustment:", error);
+      }
+    } else {
+      const updated = adjustments.filter(a => a.id !== id);
+      setAdjustments(updated);
+      localStorage.setItem('boa_adjustments', JSON.stringify(updated));
+    }
+  };
 
   const exportJSON = () => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(subscriptions));
@@ -100,12 +129,15 @@ export default function App() {
     docPdf.setFontSize(10);
     docPdf.text('Gerado automaticamente por Boa Wallet', 14, 30);
 
-    const tableData = subscriptions.map(sub => [
-      sub.name,
-      t(`cat.${sub.category}` as any),
-      formatCurrency(sub.cost, sub.costCurrency),
-      t(`form.${sub.billingCycle}` as any)
-    ]);
+    const tableData = subscriptions.map(sub => {
+      const effectiveCost = getEffectiveTotalCost(sub);
+      return [
+        sub.name,
+        t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any),
+        formatCurrency(effectiveCost.amount, effectiveCost.currency),
+        t(`form.${sub.billingCycle}` as any) === `form.${sub.billingCycle}` ? sub.billingCycle : t(`form.${sub.billingCycle}` as any)
+      ];
+    });
 
     autoTable(docPdf, {
       startY: 40,
@@ -159,8 +191,8 @@ export default function App() {
     }
 
     // User is logged in, sync from Firestore
-    const q = query(collection(db, `users/${user.uid}/subscriptions`));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const qSubs = query(collection(db, `users/${user.uid}/subscriptions`));
+    const unsubscribeSubs = onSnapshot(qSubs, (snapshot) => {
       const subs: Subscription[] = [];
       snapshot.forEach((doc) => {
         subs.push(doc.data() as Subscription);
@@ -170,15 +202,30 @@ export default function App() {
       console.error("Error fetching subscriptions from Firestore:", error);
     });
 
-    return () => unsubscribe();
+    const qAdj = query(collection(db, `users/${user.uid}/adjustments`));
+    const unsubscribeAdj = onSnapshot(qAdj, (snapshot) => {
+      const adjs: Adjustment[] = [];
+      snapshot.forEach((doc) => {
+        adjs.push(doc.data() as Adjustment);
+      });
+      setAdjustments(adjs);
+    }, (error) => {
+      console.error("Error fetching adjustments from Firestore:", error);
+    });
+
+    return () => {
+      unsubscribeSubs();
+      unsubscribeAdj();
+    };
   }, [user]);
 
   // Save to local storage as fallback when not logged in
   useEffect(() => {
     if (!user) {
       localStorage.setItem('subscriptions', JSON.stringify(subscriptions));
+      localStorage.setItem('boa_adjustments', JSON.stringify(adjustments));
     }
-  }, [subscriptions, user]);
+  }, [subscriptions, adjustments, user]);
 
   const handleLogin = async () => {
     try {
@@ -429,23 +476,23 @@ export default function App() {
 
         {activeTab === 'overview' ? (
           <>
-            <Dashboard subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+            <Dashboard 
+              subscriptions={subscriptions} 
+              baseCurrency={baseCurrency} 
+              exchangeRates={exchangeRates} 
+              adjustments={adjustments}
+              onAddAdjustment={handleAddAdjustment}
+              onRemoveAdjustment={handleRemoveAdjustment}
+            />
             
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2">
+            <div className="grid grid-cols-1 gap-8">
+              <div className="col-span-1">
                 <SubscriptionList 
                   subscriptions={subscriptions} 
                   baseCurrency={baseCurrency} 
                   exchangeRates={exchangeRates}
                   onEdit={openEdit}
                   onDelete={handleDelete}
-                />
-              </div>
-              <div className="lg:col-span-1">
-                <SavingsCalculator 
-                  subscriptions={subscriptions} 
-                  baseCurrency={baseCurrency} 
-                  exchangeRates={exchangeRates}
                 />
               </div>
             </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Subscription, Currency, convertCurrency } from '../types';
+import { Subscription, Currency, convertCurrency, getEffectiveTotalCost } from '../types';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 import { TrendingUp, TrendingDown, X, EyeOff } from 'lucide-react';
@@ -44,7 +44,8 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
   };
 
   const items = subscriptions.map(sub => {
-    const monthlyCost = getMonthlyValue(sub.costAmount, sub.costCurrency, sub.billingCycle);
+    const effectiveCost = getEffectiveTotalCost(sub);
+    const monthlyCost = getMonthlyValue(effectiveCost.amount, effectiveCost.currency, sub.billingCycle);
     const monthlyIncome = sub.hasIncome ? getMonthlyValue(sub.incomeAmount, sub.incomeCurrency, sub.incomeFrequency) : 0;
     const netValue = monthlyIncome - monthlyCost;
     return { ...sub, netValue };

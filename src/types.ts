@@ -1,7 +1,7 @@
 export type Currency = 'BRL' | 'USD' | 'EUR' | 'GBP' | 'JPY' | 'TRY' | 'ARS' | 'INR' | 'IDR' | 'CAD' | 'AUD' | 'CHF' | 'CNY' | 'MXN' | 'BTC' | 'SATS';
 
-export type PaymentMethod = 'Cartão de Crédito' | 'Cartão de Débito' | 'Gift Card' | 'Pix' | 'Transferência' | 'Outro';
-export type PaymentSource = 'Revolut' | 'N26' | 'Nubank' | 'Wise' | 'Inter' | 'Intesa Sanpaolo' | 'Outro';
+export type PaymentMethod = 'Cartão de Crédito' | 'Cartão de Débito' | 'Gift Card' | 'Pix' | 'Transferência' | 'Bitcoin' | 'Outro';
+export type PaymentSource = 'Revolut' | 'N26' | 'Nubank' | 'Wise' | 'Inter' | 'Intesa Sanpaolo' | 'Bitrefill' | 'Outro';
 
 export type BillingCycle = 'Monthly' | 'Yearly';
 
@@ -9,6 +9,15 @@ export interface SubItem {
   id: string;
   name: string;
   costAmount: number;
+}
+
+export interface Adjustment {
+  id: string;
+  description: string;
+  amount: number;
+  currency: Currency;
+  month: number;
+  year: number;
 }
 
 export type SubscriptionType = 'Subscription' | 'FixedExpense';
@@ -20,11 +29,24 @@ export interface Subscription {
   emoji: string;
   logoUrl?: string; // Optional app logo URL
   category: string;
+  notes?: string; // User notes
   
   costAmount: number;
   costCurrency: Currency;
   billingCycle: BillingCycle;
   dueDate: number; // 1-31
+  
+  isPromotional?: boolean;
+  originalCost?: number;
+  promoEndDate?: string; // ISO date string or empty for "never expires"
+  
+  hasEarlyPayDiscount?: boolean;
+  earlyPayDate?: number; // 1-31
+  earlyPayCost?: number;
+  
+  fiatReferenceAmount?: number;
+  fiatReferenceCurrency?: Currency;
+  createdAt?: number;
   
   subItems: SubItem[];
   
@@ -102,4 +124,17 @@ export const getDailyAmount = (amount: number, cycle: BillingCycle): number => {
 export const getSubscriptionTotalCost = (sub: Subscription): number => {
   const subItemsTotal = sub.subItems?.reduce((acc, item) => acc + (item.costAmount || 0), 0) || 0;
   return (sub.costAmount || 0) + subItemsTotal;
+};
+
+export const getEffectiveTotalCost = (sub: Subscription): { amount: number, currency: Currency } => {
+  if (sub.costCurrency === 'BTC' || sub.costCurrency === 'SATS') {
+    return { 
+      amount: sub.fiatReferenceAmount || 0, 
+      currency: sub.fiatReferenceCurrency || 'USD' 
+    };
+  }
+  return { 
+    amount: getSubscriptionTotalCost(sub), 
+    currency: sub.costCurrency 
+  };
 };

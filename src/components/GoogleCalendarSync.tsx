@@ -8,7 +8,7 @@ interface GoogleCalendarSyncProps {
   subscriptions: Subscription[];
 }
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_ID = (import.meta as any).env.VITE_GOOGLE_CLIENT_ID || '';
 
 export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
   const { language } = useAppContext();
@@ -114,14 +114,14 @@ export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
           <Calendar size={16} className={!GOOGLE_CLIENT_ID ? "text-gray-400" : "text-blue-500"} />
         )}
         <span className="hidden sm:inline">
-          {isSyncing ? t('app.syncing') || 'Sincronizando...' : t('app.connectCalendar') || 'Conectar Google Calendar'}
+          {isSyncing ? t('app.syncing' as any) || 'Sincronizando...' : t('app.connectCalendar' as any) || 'Conectar Google Calendar'}
         </span>
       </button>
 
       {syncStatus === 'success' && (
         <div className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
           <CheckCircle2 size={14} />
-          <span>{t('app.syncSuccess') || 'Sincronizado com sucesso!'}</span>
+          <span>{t('app.syncSuccess' as any) || 'Sincronizado com sucesso!'}</span>
         </div>
       )}
       

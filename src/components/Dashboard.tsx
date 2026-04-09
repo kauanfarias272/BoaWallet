@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Chart as ChartJS,
   ArcElement,
@@ -10,11 +10,12 @@ import {
   Title,
 } from 'chart.js';
 import { Pie, Bar } from 'react-chartjs-2';
-import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getDailyAmount, getYearlyAmount } from '../types';
+import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getDailyAmount, getYearlyAmount, Adjustment, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
-import { Sparkles, CalendarClock, Activity, UserCircle } from 'lucide-react';
+import { Sparkles, CalendarClock, Activity, UserCircle, PlusCircle } from 'lucide-react';
+import { AdjustmentsModal } from './AdjustmentsModal';
 
 const SnakeIcon = ({ className, size = 24 }: { className?: string, size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -32,15 +33,19 @@ interface DashboardProps {
   subscriptions: Subscription[];
   baseCurrency: Currency;
   exchangeRates: Record<Currency, number>;
+  adjustments: Adjustment[];
+  onAddAdjustment: (adj: Omit<Adjustment, 'id'>) => void;
+  onRemoveAdjustment: (id: string) => void;
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: DashboardProps) {
-  const { language } = useAppContext();
+export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustments, onAddAdjustment, onRemoveAdjustment }: DashboardProps) {
+  const { language, user } = useAppContext();
   const t = useTranslation(language);
+  const [showAdjustments, setShowAdjustments] = useState(false);
 
-  const { totalCost, totalIncome, netCost, dailyCost, yearlyCost, totalCashback } = useMemo(() => {
+  const { totalCost, totalIncome, netCost, dailyCost, yearlyCost, totalCashback, adjustmentsTotal } = useMemo(() => {
     let cost = 0;
     let income = 0;
     let daily = 0;
@@ -48,20 +53,20 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
     let cashback = 0;
 
     subscriptions.forEach(sub => {
-      const subTotalCost = getSubscriptionTotalCost(sub);
-      const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
-      const costInBase = convertCurrency(monthlyCost, sub.costCurrency, baseCurrency, exchangeRates);
+      const effectiveCost = getEffectiveTotalCost(sub);
+      const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
+      const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
       cost += costInBase;
       
-      const dailyInBase = convertCurrency(getDailyAmount(subTotalCost, sub.billingCycle), sub.costCurrency, baseCurrency, exchangeRates);
+      const dailyInBase = convertCurrency(getDailyAmount(effectiveCost.amount, sub.billingCycle), effectiveCost.currency, baseCurrency, exchangeRates);
       daily += dailyInBase;
       
-      const yearlyInBase = convertCurrency(getYearlyAmount(subTotalCost, sub.billingCycle), sub.costCurrency, baseCurrency, exchangeRates);
+      const yearlyInBase = convertCurrency(getYearlyAmount(effectiveCost.amount, sub.billingCycle), effectiveCost.currency, baseCurrency, exchangeRates);
       yearly += yearlyInBase;
 
       if (sub.hasCashback) {
         const cashbackAmount = monthlyCost * (sub.cashbackPercentage / 100);
-        cashback += convertCurrency(cashbackAmount, sub.costCurrency, baseCurrency, exchangeRates);
+        cashback += convertCurrency(cashbackAmount, effectiveCost.currency, baseCurrency, exchangeRates);
       }
 
       if (sub.hasIncome) {
@@ -70,22 +75,28 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
       }
     });
 
+    const currentMonth = new Date().getMonth();
+    const currentYear = new Date().getFullYear();
+    const currentAdjustments = adjustments.filter(a => a.month === currentMonth && a.year === currentYear);
+    const adjTotal = currentAdjustments.reduce((acc, adj) => acc + convertCurrency(adj.amount, adj.currency, baseCurrency, exchangeRates), 0);
+
     return {
-      totalCost: cost,
+      totalCost: cost + adjTotal,
       totalIncome: income,
       totalCashback: cashback,
-      netCost: cost - income - cashback,
-      dailyCost: daily,
-      yearlyCost: yearly,
+      netCost: cost + adjTotal - income - cashback,
+      dailyCost: daily + (adjTotal / 30),
+      yearlyCost: yearly + (adjTotal * 12),
+      adjustmentsTotal: adjTotal
     };
-  }, [subscriptions, baseCurrency, exchangeRates]);
+  }, [subscriptions, baseCurrency, exchangeRates, adjustments]);
 
   const categoryData = useMemo(() => {
     const data: Record<string, number> = {};
     subscriptions.forEach(sub => {
-      const subTotalCost = getSubscriptionTotalCost(sub);
-      const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
-      const costInBase = convertCurrency(monthlyCost, sub.costCurrency, baseCurrency, exchangeRates);
+      const effectiveCost = getEffectiveTotalCost(sub);
+      const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
+      const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
       const translatedCategory = t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any);
       data[translatedCategory] = (data[translatedCategory] || 0) + costInBase;
     });
@@ -108,9 +119,9 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
   const currencyData = useMemo(() => {
     const data: Record<string, number> = {};
     subscriptions.forEach(sub => {
-      const subTotalCost = getSubscriptionTotalCost(sub);
-      const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
-      data[sub.costCurrency] = (data[sub.costCurrency] || 0) + monthlyCost;
+      const effectiveCost = getEffectiveTotalCost(sub);
+      const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
+      data[effectiveCost.currency] = (data[effectiveCost.currency] || 0) + monthlyCost;
     });
     
     const labels = Object.keys(data);
@@ -184,21 +195,22 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
     if (subscriptions.length === 0) return null;
     const categoryTotals: Record<string, number> = {};
     subscriptions.forEach(sub => {
-      categoryTotals[sub.category] = (categoryTotals[sub.category] || 0) + getMonthlyAmount(getSubscriptionTotalCost(sub), sub.billingCycle);
+      const effectiveCost = getEffectiveTotalCost(sub);
+      categoryTotals[sub.category] = (categoryTotals[sub.category] || 0) + getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
     });
     
     const topCategory = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1])[0][0];
     
     const personas: Record<string, string> = {
-      'Streaming': '🍿 Rei do Streaming',
-      'Software': '💻 Tech Guru',
-      'Games': '🎮 Gamer Pro',
-      'Education': '📚 Estudante Focado',
-      'Health': '🧘 Fitness & Saúde',
-      'Housing': '🏠 Caseiro',
-      'Utilities': '⚡ Essencialista',
-      'Subscriptions': '📦 Assinante Serial',
-      'Others': '✨ Eclético'
+      'Streaming': 'Rei do Streaming',
+      'Software': 'Tech Guru',
+      'Games': 'Gamer Pro',
+      'Education': 'Estudante Focado',
+      'Health': 'Fitness & Saúde',
+      'Housing': 'Caseiro',
+      'Utilities': 'Essencialista',
+      'Subscriptions': 'Assinante Serial',
+      'Others': 'Eclético'
     };
     
     return personas[topCategory] || personas['Others'];
@@ -255,8 +267,21 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors">
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('dashboard.monthlyCost')}</p>
+        <div 
+          onClick={() => setShowAdjustments(true)}
+          className="bg-white dark:bg-[#1a1a1a] p-6 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 transition-colors cursor-pointer hover:ring-2 hover:ring-[#5A5A40]/50 dark:hover:ring-[#d0d0a0]/50 relative group"
+        >
+          <div className="absolute top-4 right-4 text-gray-400 group-hover:text-[#5A5A40] dark:group-hover:text-[#d0d0a0] transition-colors">
+            <PlusCircle size={20} />
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('dashboard.monthlyCost')}</p>
+            {adjustmentsTotal !== 0 && (
+              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${adjustmentsTotal > 0 ? 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400' : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                {adjustmentsTotal > 0 ? '+' : ''}{formatCurrency(adjustmentsTotal, baseCurrency)}
+              </span>
+            )}
+          </div>
           <p className="text-4xl font-serif font-medium mt-2 text-gray-900 dark:text-white">{formatCurrency(totalCost, baseCurrency)}</p>
           <div className="flex justify-between items-center mt-3 pt-3 border-t border-gray-50 dark:border-gray-800/50">
             <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -299,9 +324,9 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {persona && (
           <div className="bg-white dark:bg-[#1a1a1a] p-4 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center shrink-0">
-              <UserCircle size={24} className="text-blue-500" />
-            </div>
+            {user?.photoURL ? (
+              <img src={user.photoURL} alt="Profile" className="w-12 h-12 rounded-full object-cover shrink-0" referrerPolicy="no-referrer" />
+            ) : null}
             <div>
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('app.persona')}</p>
               <p className="text-lg font-medium text-gray-900 dark:text-white">{persona}</p>
@@ -385,6 +410,17 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates }: Dashbo
           </div>
         </div>
       </div>
+
+      {showAdjustments && (
+        <AdjustmentsModal 
+          adjustments={adjustments}
+          onAdd={onAddAdjustment}
+          onRemove={onRemoveAdjustment}
+          onClose={() => setShowAdjustments(false)}
+          baseCurrency={baseCurrency}
+          exchangeRates={exchangeRates}
+        />
+      )}
     </div>
   );
 }

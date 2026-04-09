@@ -10,9 +10,9 @@ interface SubscriptionFormProps {
   onClose: () => void;
 }
 
-const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC'];
-const PAYMENT_METHODS: PaymentMethod[] = ['Cartão de Crédito', 'Cartão de Débito', 'Gift Card', 'Pix', 'Transferência', 'Outro'];
-const PAYMENT_SOURCES = ['Revolut', 'N26', 'Nubank', 'Wise', 'Inter', 'Intesa Sanpaolo', 'Chase', 'Bank of America', 'Wells Fargo', 'Santander', 'Itaú', 'Bradesco', 'Caixa', 'Banco do Brasil', 'C6 Bank', 'Neon', 'Next', 'PicPay', 'Mercado Pago', 'PayPal', 'Stripe', 'Izybank', 'BBVA', 'Buddybank', 'Monzo', 'Starling', 'Outro'];
+const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC', 'SATS'];
+const PAYMENT_METHODS: PaymentMethod[] = ['Cartão de Crédito', 'Cartão de Débito', 'Gift Card', 'Pix', 'Transferência', 'Bitcoin', 'Outro'];
+const PAYMENT_SOURCES = ['Revolut', 'N26', 'Nubank', 'Wise', 'Inter', 'Intesa Sanpaolo', 'Chase', 'Bank of America', 'Wells Fargo', 'Santander', 'Itaú', 'Bradesco', 'Caixa', 'Banco do Brasil', 'C6 Bank', 'Neon', 'Next', 'PicPay', 'Mercado Pago', 'PayPal', 'Stripe', 'Izybank', 'BBVA', 'Buddybank', 'Monzo', 'Starling', 'Bitrefill', 'Outro'];
 const CATEGORIES = ['Streaming', 'Software', 'Games', 'Assinaturas', 'Utilidades', 'Educação', 'Moradia', 'Saúde', 'Outros'];
 
 const POPULAR_APPS = [
@@ -90,6 +90,15 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
     costCurrency: 'BRL',
     billingCycle: 'Monthly',
     dueDate: 1,
+    notes: '',
+    isPromotional: false,
+    originalCost: 0,
+    promoEndDate: '',
+    hasEarlyPayDiscount: false,
+    earlyPayDate: 1,
+    earlyPayCost: 0,
+    fiatReferenceAmount: 0,
+    fiatReferenceCurrency: 'USD',
     subItems: [],
     paymentMethod: 'Cartão de Crédito',
     paymentSource: 'Nubank',
@@ -106,6 +115,12 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
   const [customPaymentSource, setCustomPaymentSource] = useState('');
   const [isAppDropdownOpen, setIsAppDropdownOpen] = useState(false);
   const [suggestedLogo, setSuggestedLogo] = useState('');
+  
+  // Use string state for number inputs to allow empty values while typing
+  const [costAmountStr, setCostAmountStr] = useState('0');
+  const [originalCostStr, setOriginalCostStr] = useState('0');
+  const [earlyPayCostStr, setEarlyPayCostStr] = useState('0');
+  const [fiatReferenceAmountStr, setFiatReferenceAmountStr] = useState('0');
 
   useEffect(() => {
     if (formData.name && formData.name.length > 2 && !formData.logoUrl) {
@@ -125,8 +140,18 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
     if (subscription) {
       setFormData({
         ...subscription,
-        subItems: subscription.subItems || []
+        subItems: subscription.subItems || [],
+        notes: subscription.notes || '',
+        isPromotional: subscription.isPromotional || false,
+        promoEndDate: subscription.promoEndDate || '',
+        hasEarlyPayDiscount: subscription.hasEarlyPayDiscount || false,
+        earlyPayDate: subscription.earlyPayDate || 1,
       });
+      setCostAmountStr(subscription.costAmount?.toString() || '0');
+      setOriginalCostStr(subscription.originalCost?.toString() || '0');
+      setEarlyPayCostStr(subscription.earlyPayCost?.toString() || '0');
+      setFiatReferenceAmountStr(subscription.fiatReferenceAmount?.toString() || '0');
+      
       if (subscription.paymentSource && !PAYMENT_SOURCES.includes(subscription.paymentSource)) {
         setFormData(prev => ({ ...prev, paymentSource: 'Outro' }));
         setCustomPaymentSource(subscription.paymentSource);
@@ -185,6 +210,10 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
 
     onSave({
       ...formData,
+      costAmount: parseFloat(costAmountStr) || 0,
+      originalCost: parseFloat(originalCostStr) || 0,
+      earlyPayCost: parseFloat(earlyPayCostStr) || 0,
+      fiatReferenceAmount: parseFloat(fiatReferenceAmountStr) || 0,
       paymentSource: finalPaymentSource,
       id: subscription?.id || Date.now().toString(),
     } as Subscription);
@@ -319,8 +348,8 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="costAmount" 
                   step="0.01"
                   required
-                  value={formData.costAmount} 
-                  onChange={handleChange}
+                  value={costAmountStr} 
+                  onChange={(e) => setCostAmountStr(e.target.value)}
                   className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 />
               </div>
@@ -367,7 +396,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   onChange={handleChange}
                   className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 >
-                  {PAYMENT_METHODS.map(c => <option key={c} value={c}>{c}</option>)}
+                  {PAYMENT_METHODS.map(c => <option key={c} value={c}>{t(`pay.${c}` as any) === `pay.${c}` ? c : t(`pay.${c}` as any)}</option>)}
                 </select>
               </div>
               <div className="space-y-1">
@@ -397,6 +426,136 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   )}
                 </div>
               </div>
+            </div>
+
+            {(formData.costCurrency === 'BTC' || formData.costCurrency === 'SATS') && (
+              <div className="p-4 mt-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800/50 rounded-2xl space-y-4">
+                <p className="text-sm text-yellow-800 dark:text-yellow-200 font-medium">
+                  ⚠️ {t('form.cryptoWarning')}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-yellow-900 dark:text-yellow-100">{t('form.fiatReference')}</label>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      required
+                      value={fiatReferenceAmountStr} 
+                      onChange={(e) => setFiatReferenceAmountStr(e.target.value)}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-yellow-200 dark:border-yellow-800/50 rounded-xl focus:ring-2 focus:ring-yellow-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-yellow-900 dark:text-yellow-100">{t('form.fiatCurrency')}</label>
+                    <select 
+                      name="fiatReferenceCurrency" 
+                      value={formData.fiatReferenceCurrency} 
+                      onChange={handleChange}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-yellow-200 dark:border-yellow-800/50 rounded-xl focus:ring-2 focus:ring-yellow-500 focus:border-transparent outline-none transition-all dark:text-white"
+                    >
+                      {CURRENCIES.filter(c => c !== 'BTC' && c !== 'SATS').map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Descontos e Promoções */}
+          <div className="space-y-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('form.discounts')}</h3>
+            
+            <div className="space-y-4">
+              {/* Promotional Value Toggle */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  name="isPromotional"
+                  checked={formData.isPromotional}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-[#5A5A40] rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-[#5A5A40]"
+                />
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-200">{t('form.isPromotional')}</span>
+              </label>
+
+              {formData.isPromotional && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-[#fdfbf7] dark:bg-[#121212] rounded-2xl border border-gray-200 dark:border-gray-700">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.originalCost')}</label>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      value={originalCostStr} 
+                      onChange={(e) => setOriginalCostStr(e.target.value)}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.promoEndDate')}</label>
+                    <input 
+                      type="date" 
+                      name="promoEndDate"
+                      value={formData.promoEndDate || ''} 
+                      onChange={handleChange}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500">{t('form.promoEndDateDesc')}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Early Pay Discount Toggle */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  name="hasEarlyPayDiscount"
+                  checked={formData.hasEarlyPayDiscount}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-[#5A5A40] rounded border-gray-300 dark:border-gray-700 dark:bg-gray-800 focus:ring-[#5A5A40]"
+                />
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-200">{t('form.hasEarlyPayDiscount')}</span>
+              </label>
+
+              {formData.hasEarlyPayDiscount && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-[#fdfbf7] dark:bg-[#121212] rounded-2xl border border-gray-200 dark:border-gray-700">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.earlyPayDate')}</label>
+                    <input 
+                      type="number" 
+                      name="earlyPayDate"
+                      min="1" max="31"
+                      value={formData.earlyPayDate} 
+                      onChange={handleChange}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.earlyPayCost')}</label>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      value={earlyPayCostStr} 
+                      onChange={(e) => setEarlyPayCostStr(e.target.value)}
+                      className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Notas */}
+          <div className="space-y-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.notes')}</label>
+              <textarea 
+                name="notes" 
+                value={formData.notes || ''} 
+                onChange={handleChange as any}
+                rows={3}
+                placeholder={t('form.notesPlaceholder')}
+                className="w-full px-4 py-3 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white resize-none"
+              />
             </div>
           </div>
 

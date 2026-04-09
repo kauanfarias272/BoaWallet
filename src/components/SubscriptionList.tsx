@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost } from '../types';
+import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
 import { Edit2, Trash2, CalendarPlus, X } from 'lucide-react';
 import { useAppContext } from '../AppContext';
@@ -37,7 +37,7 @@ BEGIN:VEVENT
 DTSTART:${start}
 DTEND:${end}
 SUMMARY:Payment: ${sub.name}
-DESCRIPTION:Payment reminder for ${sub.name} (${formatCurrency(getSubscriptionTotalCost(sub), sub.costCurrency)})
+DESCRIPTION:Payment reminder for ${sub.name} (${formatCurrency(getEffectiveTotalCost(sub).amount, getEffectiveTotalCost(sub).currency)}).\\n\\n${sub.notes ? `Notes: ${sub.notes}\\n` : ''}${sub.isPromotional ? `Promotional Value: ${sub.originalCost ? formatCurrency(sub.originalCost, sub.costCurrency) : 'Yes'}\\n` : ''}
 RRULE:FREQ=${sub.billingCycle === 'Monthly' ? 'MONTHLY' : 'YEARLY'}
 END:VEVENT
 END:VCALENDAR`;
@@ -71,9 +71,9 @@ END:VCALENDAR`;
           </thead>
           <tbody className="divide-y divide-gray-100/50 dark:divide-gray-800/50">
             {sortedSubs.map((sub) => {
-              const subTotalCost = getSubscriptionTotalCost(sub);
-              const monthlyCost = getMonthlyAmount(subTotalCost, sub.billingCycle);
-              const costInBase = convertCurrency(monthlyCost, sub.costCurrency, baseCurrency, exchangeRates);
+              const effectiveCost = getEffectiveTotalCost(sub);
+              const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
+              const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
               
               let incomeInBase = 0;
               let cashbackInBase = 0;
@@ -117,6 +117,11 @@ END:VCALENDAR`;
                                 {t('form.typeFixedExpense')}
                               </span>
                             )}
+                            {sub.isPromotional && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-purple-50 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+                                Promo
+                              </span>
+                            )}
                             {sub.subItems && sub.subItems.length > 0 && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
                                 +{sub.subItems.length}
@@ -136,8 +141,13 @@ END:VCALENDAR`;
                     <td className="p-4 hidden md:table-cell">
                       <div className="flex flex-col">
                         <span className="text-sm font-medium text-gray-900 dark:text-gray-300">
-                          {formatCurrency(subTotalCost, sub.costCurrency)}
+                          {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
                         </span>
+                        {sub.isPromotional && sub.originalCost ? (
+                          <span className="text-xs text-gray-500 dark:text-gray-400 line-through">
+                            {formatCurrency(sub.originalCost, sub.costCurrency)}
+                          </span>
+                        ) : null}
                         {sub.subItems && sub.subItems.length > 0 && (
                           <span className="text-xs text-gray-500 dark:text-gray-400">
                             (Base: {formatCurrency(sub.costAmount, sub.costCurrency)})
@@ -211,26 +221,36 @@ END:VCALENDAR`;
                       </div>
                     </td>
                   </tr>
-                  {sub.subItems && sub.subItems.length > 0 && (
+                  {(sub.subItems && sub.subItems.length > 0) || sub.notes ? (
                     <tr className="bg-[#fdfbf7]/50 dark:bg-[#121212]/50">
                       <td colSpan={7} className="p-0">
                         <div className="pl-20 pr-4 py-3 border-t border-gray-50 dark:border-gray-800/50">
-                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wider">{t('list.subItems')}:</div>
-                          <div className="space-y-2">
-                            {sub.subItems.map(item => (
-                              <div key={item.id} className="flex items-center justify-between text-sm">
-                                <span className="text-gray-600 dark:text-gray-400 flex items-center gap-2">
-                                  <div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-                                  {item.name}
-                                </span>
-                                <span className="text-gray-900 dark:text-gray-300 font-medium">{formatCurrency(item.costAmount, sub.costCurrency)}</span>
+                          {sub.notes && (
+                            <div className="mb-3">
+                              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">{t('form.notes')}:</div>
+                              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{sub.notes}</p>
+                            </div>
+                          )}
+                          {sub.subItems && sub.subItems.length > 0 && (
+                            <>
+                              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wider">{t('list.subItems')}:</div>
+                              <div className="space-y-2">
+                                {sub.subItems.map(item => (
+                                  <div key={item.id} className="flex items-center justify-between text-sm">
+                                    <span className="text-gray-600 dark:text-gray-400 flex items-center gap-2">
+                                      <div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600"></div>
+                                      {item.name}
+                                    </span>
+                                    <span className="text-gray-900 dark:text-gray-300 font-medium">{formatCurrency(item.costAmount, sub.costCurrency)}</span>
+                                  </div>
+                                ))}
                               </div>
-                            ))}
-                          </div>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
-                  )}
+                  ) : null}
                 </React.Fragment>
               );
             })}
@@ -263,7 +283,7 @@ END:VCALENDAR`;
                 </div>
                 <div>
                   <h3 className="text-lg font-medium text-white">{selectedSub.name}</h3>
-                  <p className="text-sm text-gray-400">{formatCurrency(getSubscriptionTotalCost(selectedSub), selectedSub.costCurrency)}</p>
+                  <p className="text-sm text-gray-400">{formatCurrency(getEffectiveTotalCost(selectedSub).amount, getEffectiveTotalCost(selectedSub).currency)}</p>
                 </div>
               </div>
               <button onClick={() => setSelectedSub(null)} className="p-2 text-gray-400 hover:text-white bg-[#222] rounded-full transition-colors">
