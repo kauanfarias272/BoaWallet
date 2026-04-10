@@ -10,7 +10,7 @@ import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { auth, googleProvider, db } from './firebase';
-import { signInWithRedirect, getRedirectResult, signOut } from 'firebase/auth';
+import { signInWithPopup, getRedirectResult, signOut } from 'firebase/auth';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, serverTimestamp } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -42,6 +42,22 @@ export default function App() {
 
   const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender } = useAppContext();
   const t = useTranslation(language);
+
+  // Dropdown states for mobile compatibility
+  const [langOpen, setLangOpen] = useState(false);
+  const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // Close dropdowns when clicking outside or switching
+  useEffect(() => {
+    const handleOutsideClick = () => {
+      setLangOpen(false);
+      setCurrencyOpen(false);
+      setProfileOpen(false);
+    };
+    document.addEventListener('click', handleOutsideClick);
+    return () => document.removeEventListener('click', handleOutsideClick);
+  }, []);
 
   // Secret Menu Logic
   const handleTitleClick = () => {
@@ -316,7 +332,7 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      await signInWithRedirect(auth, googleProvider);
+      await signInWithPopup(auth, googleProvider);
     } catch (error) {
       console.error("Error signing in with Google", error);
     }
@@ -440,17 +456,21 @@ export default function App() {
           <div className="flex items-center gap-3 sm:gap-6">
             <div className="flex items-center bg-[#1a1a1a] border border-gray-800 rounded-full p-1 shadow-inner">
               {/* Language Dropdown */}
-              <div className="relative group">
+              <div className="relative" onClick={(e) => { e.stopPropagation(); setLangOpen(!langOpen); setCurrencyOpen(false); setProfileOpen(false); }}>
                 <button className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full hover:bg-[#2a2a2a] transition-colors text-sm font-medium text-gray-300">
                   <span>{LANG_OPTIONS.find(l => l.code === language)?.flag}</span>
                   <span className="hidden sm:inline">{LANG_OPTIONS.find(l => l.code === language)?.label}</span>
                   <ChevronDown size={14} className="text-gray-500 hidden sm:block" />
                 </button>
-                <div className="absolute top-full right-0 mt-2 w-32 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden">
+                <div className={`absolute top-full right-0 mt-2 w-32 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 overflow-hidden ${langOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
                   {LANG_OPTIONS.map(lang => (
                     <button
                       key={lang.code}
-                      onClick={() => setLanguage(lang.code as Language)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setLanguage(lang.code as Language);
+                        setLangOpen(false);
+                      }}
                       className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm ${language === lang.code ? 'text-white bg-[#2a2a2a]' : 'text-gray-400'}`}
                     >
                       <span>{lang.flag}</span>
@@ -463,17 +483,21 @@ export default function App() {
               <div className="w-px h-4 bg-gray-800 mx-1"></div>
 
               {/* Currency Dropdown */}
-              <div className="relative group">
+              <div className="relative" onClick={(e) => { e.stopPropagation(); setCurrencyOpen(!currencyOpen); setLangOpen(false); setProfileOpen(false); }}>
                 <button className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full hover:bg-[#2a2a2a] transition-colors text-sm font-medium text-gray-300">
                   <span>{baseCurrency === 'SATS' ? '₿' : baseCurrency === 'BTC' ? '₿' : '$'}</span>
                   <span className="hidden sm:inline">{baseCurrency}</span>
                   <ChevronDown size={14} className="text-gray-500 hidden sm:block" />
                 </button>
-                <div className="absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 max-h-64 overflow-y-auto">
+                <div className={`absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 max-h-64 overflow-y-auto ${currencyOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
                   {CURRENCIES.map(curr => (
                     <button
                       key={curr}
-                      onClick={() => setBaseCurrency(curr as Currency)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBaseCurrency(curr as Currency);
+                        setCurrencyOpen(false);
+                      }}
                       className={`w-full flex items-center justify-between px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm ${baseCurrency === curr ? 'text-white bg-[#2a2a2a]' : 'text-gray-400'}`}
                     >
                       <span>{curr}</span>
@@ -492,18 +516,22 @@ export default function App() {
             {!authLoading && (
               <div className="flex items-center">
                 {user ? (
-                  <div className="relative group">
+                  <div className="relative" onClick={(e) => { e.stopPropagation(); setProfileOpen(!profileOpen); setLangOpen(false); setCurrencyOpen(false); }}>
                     <button className="flex items-center gap-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-gray-800 px-3 py-1.5 rounded-full transition-colors">
                       <img src={user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${user.displayName || 'User'}`} alt="Profile" className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
                       <span className="text-sm font-medium text-gray-300 hidden sm:block">{user.displayName?.split(' ')[0]}</span>
                     </button>
-                    <div className="absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden">
+                    <div className={`absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 overflow-hidden ${profileOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
                       <div className="px-4 py-3 border-b border-gray-800">
                         <p className="text-sm font-medium text-white truncate">{user.displayName}</p>
                         <p className="text-xs text-gray-500 truncate">{user.email}</p>
                       </div>
                       <button
-                        onClick={handleLogout}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleLogout();
+                          setProfileOpen(false);
+                        }}
                         className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm text-red-400"
                       >
                         <LogOut size={16} />
