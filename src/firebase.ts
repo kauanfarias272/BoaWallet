@@ -17,3 +17,4 @@ enableIndexedDbPersistence(db).catch((err) => {
 });
 
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('https://www.googleapis.com/auth/calendar');

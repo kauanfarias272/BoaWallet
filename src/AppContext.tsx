@@ -18,6 +18,8 @@ interface AppContextType {
   setGender: (gender: Gender) => void;
   user: User | null;
   authLoading: boolean;
+  googleAccessToken: string | null;
+  setGoogleAccessToken: (token: string | null) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -38,6 +40,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [gender, setGender] = useState<Gender>(() => (localStorage.getItem('userGender') as Gender) || 'N');
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -103,7 +106,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AppContext.Provider value={{ language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading }}>
+    <AppContext.Provider value={{ language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, googleAccessToken, setGoogleAccessToken }}>
       {children}
     </AppContext.Provider>
   );

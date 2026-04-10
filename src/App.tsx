@@ -42,7 +42,7 @@ export default function App() {
   const [clickCount, setClickCount] = useState(0);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
 
-  const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender } = useAppContext();
+  const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender, googleAccessToken, setGoogleAccessToken } = useAppContext();
   const t = useTranslation(language);
 
   // Dropdown states for mobile compatibility
@@ -331,23 +331,41 @@ export default function App() {
     try {
       if (Capacitor.isNativePlatform()) {
         // Native: use Capacitor Firebase Auth plugin
-        const result = await FirebaseAuthentication.signInWithGoogle();
+        const result = await FirebaseAuthentication.signInWithGoogle({
+          scopes: ['https://www.googleapis.com/auth/calendar'],
+        });
         // Get the ID token and create a credential for Firebase JS SDK
         const idToken = result.credential?.idToken;
+        const accessToken = result.credential?.accessToken;
         if (idToken) {
           const credential = GoogleAuthProvider.credential(idToken);
           await signInWithCredential(auth, credential);
         }
+        if (accessToken) {
+          setGoogleAccessToken(accessToken);
+          localStorage.setItem('googleAccessToken', accessToken);
+        }
       } else {
         // Web: use popup
-        await signInWithPopup(auth, googleProvider);
+        const result = await signInWithPopup(auth, googleProvider);
+        // Extract the OAuth access token from the credential
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          setGoogleAccessToken(credential.accessToken);
+          localStorage.setItem('googleAccessToken', credential.accessToken);
+        }
       }
     } catch (error: any) {
       console.error("Error signing in with Google", error);
       // If native fails, try popup as fallback
       if (Capacitor.isNativePlatform()) {
         try {
-          await signInWithPopup(auth, googleProvider);
+          const result = await signInWithPopup(auth, googleProvider);
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          if (credential?.accessToken) {
+            setGoogleAccessToken(credential.accessToken);
+            localStorage.setItem('googleAccessToken', credential.accessToken);
+          }
         } catch (fallbackError) {
           console.error("Fallback popup also failed", fallbackError);
         }
