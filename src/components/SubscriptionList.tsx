@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, CalendarPlus, X } from 'lucide-react';
+import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 
@@ -257,6 +257,100 @@ END:VCALENDAR`;
                       </td>
                     </tr>
                   ) : null}
+
+                  {/* Annual ROI Projection for yearly subs with monthly income */}
+                  {sub.billingCycle === 'Yearly' && sub.hasIncome && sub.incomeFrequency === 'Monthly' && sub.incomeAmount > 0 && (() => {
+                    const effectiveCost = getEffectiveTotalCost(sub);
+                    const annualCost = effectiveCost.amount; // Already yearly
+                    const monthlyIncomeInCostCurrency = convertCurrency(sub.incomeAmount, sub.incomeCurrency, effectiveCost.currency, exchangeRates);
+                    const annualIncome = monthlyIncomeInCostCurrency * 12;
+                    const annualROI = annualIncome - annualCost;
+                    const breakEvenMonth = monthlyIncomeInCostCurrency > 0 ? Math.ceil(annualCost / monthlyIncomeInCostCurrency) : 0;
+                    const isProfit = annualROI >= 0;
+
+                    return (
+                      <tr className="bg-gradient-to-r from-[#fdfbf7]/50 to-[#f0f9f0]/50 dark:from-[#121212]/50 dark:to-[#0f1a0f]/50">
+                        <td colSpan={7} className="p-0">
+                          <div className="pl-20 pr-4 py-4 border-t border-gray-50 dark:border-gray-800/50">
+                            <div className="flex items-center gap-2 mb-3">
+                              {isProfit ? (
+                                <TrendingUp size={16} className="text-emerald-500" />
+                              ) : (
+                                <TrendingDown size={16} className="text-red-500" />
+                              )}
+                              <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                {t('roi.annualProjection' as any)}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              {/* Annual Cost */}
+                              <div className="bg-white/60 dark:bg-[#1a1a1a]/60 rounded-xl p-3 border border-gray-100/50 dark:border-gray-800/50">
+                                <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">{t('roi.annualCost' as any)}</p>
+                                <p className="text-sm font-semibold text-red-600 dark:text-red-400">
+                                  -{formatCurrency(annualCost, effectiveCost.currency)}
+                                </p>
+                              </div>
+
+                              {/* Annual Income */}
+                              <div className="bg-white/60 dark:bg-[#1a1a1a]/60 rounded-xl p-3 border border-gray-100/50 dark:border-gray-800/50">
+                                <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">{t('roi.annualIncome' as any)}</p>
+                                <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                                  +{formatCurrency(annualIncome, effectiveCost.currency)}
+                                </p>
+                                <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                  ({formatCurrency(monthlyIncomeInCostCurrency, effectiveCost.currency)}/mês × 12)
+                                </p>
+                              </div>
+
+                              {/* Annual ROI */}
+                              <div className={`rounded-xl p-3 border ${isProfit ? 'bg-emerald-50/60 dark:bg-emerald-900/10 border-emerald-200/50 dark:border-emerald-800/30' : 'bg-red-50/60 dark:bg-red-900/10 border-red-200/50 dark:border-red-800/30'}`}>
+                                <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">{t('roi.annualROI' as any)}</p>
+                                <p className={`text-sm font-bold ${isProfit ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                                  {isProfit ? '+' : ''}{formatCurrency(annualROI, effectiveCost.currency)}
+                                </p>
+                                <p className={`text-[10px] font-medium mt-0.5 ${isProfit ? 'text-emerald-500' : 'text-red-500'}`}>
+                                  {isProfit ? t('roi.profit' as any) : t('roi.loss' as any)}
+                                </p>
+                              </div>
+
+                              {/* Break-even Month */}
+                              <div className="bg-white/60 dark:bg-[#1a1a1a]/60 rounded-xl p-3 border border-gray-100/50 dark:border-gray-800/50">
+                                <p className="text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">{t('roi.breakEvenMonth' as any)}</p>
+                                <p className={`text-sm font-semibold ${breakEvenMonth <= 12 ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'}`}>
+                                  {breakEvenMonth > 0 ? `${breakEvenMonth}°` : '—'}
+                                </p>
+                                {breakEvenMonth > 0 && breakEvenMonth <= 12 && (
+                                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                    {t('roi.profit' as any)} a partir do {breakEvenMonth + 1}° mês
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Month-by-month mini bar */}
+                            <div className="mt-3 flex items-center gap-1">
+                              {Array.from({ length: 12 }, (_, i) => {
+                                const balanceAtMonth = (monthlyIncomeInCostCurrency * (i + 1)) - annualCost;
+                                const isPositive = balanceAtMonth >= 0;
+                                return (
+                                  <div
+                                    key={i}
+                                    className={`flex-1 h-2 rounded-full transition-colors ${isPositive ? 'bg-emerald-400 dark:bg-emerald-500' : 'bg-red-300 dark:bg-red-700'}`}
+                                    title={`${t('roi.monthlyProjection' as any, { month: (i + 1).toString(), balance: formatCurrency(balanceAtMonth, effectiveCost.currency) })}`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <div className="flex justify-between mt-1">
+                              <span className="text-[10px] text-gray-400">Mês 1</span>
+                              <span className="text-[10px] text-gray-400">Mês 12</span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })()}
                 </React.Fragment>
               );
             })}

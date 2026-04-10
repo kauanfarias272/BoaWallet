@@ -1,17 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { SubscriptionList } from './components/SubscriptionList';
 import { SubscriptionForm } from './components/SubscriptionForm';
 import { GoogleCalendarSync } from './components/GoogleCalendarSync';
 import { WelcomeModal } from './components/WelcomeModal';
 import { Cashflow } from './components/Cashflow';
-import { INITIAL_SUBSCRIPTIONS } from './data';
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost } from './types';
 import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut, Download, Upload, FileText } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { auth, googleProvider, db } from './firebase';
-import { signInWithPopup, signOut } from 'firebase/auth';
+import { signInWithRedirect, getRedirectResult, signOut } from 'firebase/auth';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, serverTimestamp } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -27,7 +26,8 @@ const LANG_OPTIONS = [
 const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC', 'SATS'];
 
 export default function App() {
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>(INITIAL_SUBSCRIPTIONS);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const autoPayRanRef = useRef(false);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [baseCurrency, setBaseCurrency] = useState<Currency>('USD');
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -55,75 +55,81 @@ export default function App() {
     });
   };
 
+  // Reset click count after 2 seconds of inactivity
   useEffect(() => {
     if (clickCount > 0) {
       const timer = setTimeout(() => setClickCount(0), 2000);
-      useEffect(() => {
-        if (!subscriptions.length) return;
-        const today = new Date();
-        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-        let foundPending = null;
-        let subsToAutoPay: any[] = [];
-
-        subscriptions.forEach(sub => {
-          if (sub.status === 'cancelled') return;
-          const history = sub.paymentHistory || {};
-          if (history[currentMonthKey]) return; // already answered
-
-          let daysSinceDue = today.getDate() - sub.dueDate;
-          if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
-            daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
-          }
-
-          if (daysSinceDue >= 0 && daysSinceDue <= 1) {
-            if (!foundPending) foundPending = sub;
-          } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
-            subsToAutoPay.push(sub);
-          }
-        });
-
-        if (subsToAutoPay.length > 0) {
-          Promise.all(subsToAutoPay.map(sub => handleSave({
-            ...sub,
-            paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
-          }))).catch(console.error);
-        }
-
-        if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
-          setPendingPaymentSub(foundPending);
-        }
-      }, [subscriptions]);
-
-      const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
-        const today = new Date();
-        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-        const history = sub.paymentHistory || {};
-
-        if (answeredYes) {
-          handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
-          setPendingPaymentSub(null);
-        } else {
-          setPendingPaymentSub(null);
-          setCancelPromptSub(sub);
-        }
-      };
-
-      const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
-        const today = new Date();
-        const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-        const history = sub.paymentHistory || {};
-
-        handleSave({
-          ...sub,
-          status: cancelled ? 'cancelled' : 'active',
-          paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
-        });
-        setCancelPromptSub(null);
-      };
-
       return () => clearTimeout(timer);
     }
   }, [clickCount]);
+
+  // Auto-payment and pending payment logic (runs once per session)
+  useEffect(() => {
+    if (!subscriptions.length || autoPayRanRef.current) return;
+    autoPayRanRef.current = true; // Prevent infinite loop
+
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    let foundPending: Subscription | null = null;
+    const subsToAutoPay: Subscription[] = [];
+
+    subscriptions.forEach(sub => {
+      if (sub.status === 'cancelled') return;
+      const history = sub.paymentHistory || {};
+      if (history[currentMonthKey]) return; // already answered
+
+      let daysSinceDue = today.getDate() - sub.dueDate;
+      if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
+        daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
+      }
+
+      if (daysSinceDue >= 0 && daysSinceDue <= 1) {
+        if (!foundPending) foundPending = sub;
+      } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
+        subsToAutoPay.push(sub);
+      }
+    });
+
+    if (subsToAutoPay.length > 0) {
+      Promise.all(subsToAutoPay.map(sub => handleSave({
+        ...sub,
+        paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
+      }))).catch(console.error);
+    }
+
+    if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
+      setPendingPaymentSub(foundPending);
+    }
+  }, [subscriptions]);
+
+  // Payment answer handler (single definition)
+  const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    const history = sub.paymentHistory || {};
+
+    if (answeredYes) {
+      handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
+      setPendingPaymentSub(null);
+    } else {
+      setPendingPaymentSub(null);
+      setCancelPromptSub(sub);
+    }
+  };
+
+  // Cancel answer handler (single definition)
+  const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+    const history = sub.paymentHistory || {};
+
+    handleSave({
+      ...sub,
+      status: cancelled ? 'cancelled' : 'active',
+      paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
+    });
+    setCancelPromptSub(null);
+  };
 
   const handleAddAdjustment = async (adjData: Omit<Adjustment, 'id'>) => {
     const newAdj: Adjustment = { ...adjData, id: Date.now().toString() };
@@ -226,6 +232,13 @@ export default function App() {
     return nameToUse ? `${timeGreeting}, ${nameToUse}.` : `${timeGreeting}.`;
   };
 
+  // Handle redirect result from Firebase login
+  useEffect(() => {
+    getRedirectResult(auth).catch((error) => {
+      console.error('Error getting redirect result', error);
+    });
+  }, []);
+
   // Sync User Profile
   useEffect(() => {
     if (user) {
@@ -244,13 +257,21 @@ export default function App() {
   // Sync with Firestore
   useEffect(() => {
     if (!user) {
-      // If not logged in, we could load from local storage or keep initial
+      // If not logged in, load from local storage
       const localSubs = localStorage.getItem('subscriptions');
       if (localSubs) {
         try {
           setSubscriptions(JSON.parse(localSubs));
         } catch (e) {
           console.error("Error parsing local subscriptions", e);
+        }
+      }
+      const localAdj = localStorage.getItem('boa_adjustments');
+      if (localAdj) {
+        try {
+          setAdjustments(JSON.parse(localAdj));
+        } catch (e) {
+          console.error("Error parsing local adjustments", e);
         }
       }
       return;
@@ -279,69 +300,6 @@ export default function App() {
       console.error("Error fetching adjustments from Firestore:", error);
     });
 
-    useEffect(() => {
-      if (!subscriptions.length) return;
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      let foundPending = null;
-      let subsToAutoPay: any[] = [];
-
-      subscriptions.forEach(sub => {
-        if (sub.status === 'cancelled') return;
-        const history = sub.paymentHistory || {};
-        if (history[currentMonthKey]) return; // already answered
-
-        let daysSinceDue = today.getDate() - sub.dueDate;
-        if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
-          daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
-        }
-
-        if (daysSinceDue >= 0 && daysSinceDue <= 1) {
-          if (!foundPending) foundPending = sub;
-        } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
-          subsToAutoPay.push(sub);
-        }
-      });
-
-      if (subsToAutoPay.length > 0) {
-        Promise.all(subsToAutoPay.map(sub => handleSave({
-          ...sub,
-          paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
-        }))).catch(console.error);
-      }
-
-      if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
-        setPendingPaymentSub(foundPending);
-      }
-    }, [subscriptions]);
-
-    const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      const history = sub.paymentHistory || {};
-
-      if (answeredYes) {
-        handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
-        setPendingPaymentSub(null);
-      } else {
-        setPendingPaymentSub(null);
-        setCancelPromptSub(sub);
-      }
-    };
-
-    const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      const history = sub.paymentHistory || {};
-
-      handleSave({
-        ...sub,
-        status: cancelled ? 'cancelled' : 'active',
-        paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
-      });
-      setCancelPromptSub(null);
-    };
-
     return () => {
       unsubscribeSubs();
       unsubscribeAdj();
@@ -358,7 +316,7 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithRedirect(auth, googleProvider);
     } catch (error) {
       console.error("Error signing in with Google", error);
     }
@@ -458,134 +416,8 @@ export default function App() {
 
     // Check every hour
     const interval = setInterval(checkReminders, 60 * 60 * 1000);
-    useEffect(() => {
-      if (!subscriptions.length) return;
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      let foundPending = null;
-      let subsToAutoPay: any[] = [];
-
-      subscriptions.forEach(sub => {
-        if (sub.status === 'cancelled') return;
-        const history = sub.paymentHistory || {};
-        if (history[currentMonthKey]) return; // already answered
-
-        let daysSinceDue = today.getDate() - sub.dueDate;
-        if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
-          daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
-        }
-
-        if (daysSinceDue >= 0 && daysSinceDue <= 1) {
-          if (!foundPending) foundPending = sub;
-        } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
-          subsToAutoPay.push(sub);
-        }
-      });
-
-      if (subsToAutoPay.length > 0) {
-        Promise.all(subsToAutoPay.map(sub => handleSave({
-          ...sub,
-          paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
-        }))).catch(console.error);
-      }
-
-      if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
-        setPendingPaymentSub(foundPending);
-      }
-    }, [subscriptions]);
-
-    const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      const history = sub.paymentHistory || {};
-
-      if (answeredYes) {
-        handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
-        setPendingPaymentSub(null);
-      } else {
-        setPendingPaymentSub(null);
-        setCancelPromptSub(sub);
-      }
-    };
-
-    const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
-      const today = new Date();
-      const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-      const history = sub.paymentHistory || {};
-
-      handleSave({
-        ...sub,
-        status: cancelled ? 'cancelled' : 'active',
-        paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
-      });
-      setCancelPromptSub(null);
-    };
-
     return () => clearInterval(interval);
   }, [subscriptions, t]);
-
-  useEffect(() => {
-    if (!subscriptions.length) return;
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    let foundPending = null;
-    let subsToAutoPay: any[] = [];
-
-    subscriptions.forEach(sub => {
-      if (sub.status === 'cancelled') return;
-      const history = sub.paymentHistory || {};
-      if (history[currentMonthKey]) return; // already answered
-
-      let daysSinceDue = today.getDate() - sub.dueDate;
-      if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
-        daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
-      }
-
-      if (daysSinceDue >= 0 && daysSinceDue <= 1) {
-        if (!foundPending) foundPending = sub;
-      } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
-        subsToAutoPay.push(sub);
-      }
-    });
-
-    if (subsToAutoPay.length > 0) {
-      Promise.all(subsToAutoPay.map(sub => handleSave({
-        ...sub,
-        paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
-      }))).catch(console.error);
-    }
-
-    if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
-      setPendingPaymentSub(foundPending);
-    }
-  }, [subscriptions]);
-
-  const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    const history = sub.paymentHistory || {};
-
-    if (answeredYes) {
-      handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
-      setPendingPaymentSub(null);
-    } else {
-      setPendingPaymentSub(null);
-      setCancelPromptSub(sub);
-    }
-  };
-
-  const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    const history = sub.paymentHistory || {};
-
-    handleSave({
-      ...sub,
-      status: cancelled ? 'cancelled' : 'active',
-      paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
-    });
-    setCancelPromptSub(null);
-  };
 
   return (
     <div className="min-h-screen bg-[#121212] text-gray-100 font-sans pb-20 transition-colors duration-200">
