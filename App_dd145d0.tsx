@@ -10,12 +10,8 @@ import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { auth, googleProvider, db } from './firebase';
-import { signInWithPopup, signInWithCredential, GoogleAuthProvider, signOut } from 'firebase/auth';
-import { Capacitor } from '@capacitor/core';
-import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { signInWithPopup, getRedirectResult, signOut } from 'firebase/auth';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, serverTimestamp } from 'firebase/firestore';
-import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
-import { Share } from '@capacitor/share';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatCurrency } from './lib/utils';
@@ -44,7 +40,7 @@ export default function App() {
   const [clickCount, setClickCount] = useState(0);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
 
-  const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender, googleAccessToken, setGoogleAccessToken } = useAppContext();
+  const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender } = useAppContext();
   const t = useTranslation(language);
 
   // Dropdown states for mobile compatibility
@@ -180,36 +176,14 @@ export default function App() {
     }
   };
 
-  const exportJSON = async () => {
-    const jsonStr = JSON.stringify(subscriptions, null, 2);
-    
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const fileName = `boa-wallet-backup-${new Date().getTime()}.json`;
-        const result = await Filesystem.writeFile({
-          path: fileName,
-          data: jsonStr,
-          directory: Directory.Cache,
-          encoding: Encoding.UTF8
-        });
-        await Share.share({
-          title: 'Boa Wallet Backup',
-          text: 'Backup das assinaturas',
-          url: result.uri,
-          dialogTitle: 'Salvar/Compartilhar Backup'
-        });
-      } catch (e) {
-        console.error("Error exporting JSON natively", e);
-      }
-    } else {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(jsonStr);
-      const downloadAnchorNode = document.createElement('a');
-      downloadAnchorNode.setAttribute("href", dataStr);
-      downloadAnchorNode.setAttribute("download", "boa-wallet-backup.json");
-      document.body.appendChild(downloadAnchorNode);
-      downloadAnchorNode.click();
-      downloadAnchorNode.remove();
-    }
+  const exportJSON = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(subscriptions));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", "boa-wallet-backup.json");
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
     setShowSecretMenu(false);
   };
 
@@ -236,7 +210,7 @@ export default function App() {
     setShowSecretMenu(false);
   };
 
-  const exportPDF = async () => {
+  const exportPDF = () => {
     const docPdf = new jsPDF();
     docPdf.setFontSize(20);
     docPdf.text('Boa Wallet - Relatório de Assinaturas', 14, 22);
@@ -259,28 +233,7 @@ export default function App() {
       body: tableData,
     });
 
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const pdfBase64 = docPdf.output('datauristring').split(',')[1];
-        const fileName = `boa-wallet-relatorio-${new Date().getTime()}.pdf`;
-        const result = await Filesystem.writeFile({
-          path: fileName,
-          data: pdfBase64,
-          directory: Directory.Cache,
-        });
-        await Share.share({
-          title: 'Relatório Boa Wallet',
-          text: 'Relatório em PDF de suas assinaturas',
-          url: result.uri,
-          dialogTitle: 'Salvar/Compartilhar PDF'
-        });
-      } catch (e) {
-        console.error("Error exporting PDF natively", e);
-      }
-    } else {
-      docPdf.save('boa-wallet-relatorio.pdf');
-    }
-    
+    docPdf.save('boa-wallet-relatorio.pdf');
     setShowSecretMenu(false);
   };
 
@@ -295,7 +248,12 @@ export default function App() {
     return nameToUse ? `${timeGreeting}, ${nameToUse}.` : `${timeGreeting}.`;
   };
 
-  // No redirect result needed - using native plugin or popup
+  // Handle redirect result from Firebase login
+  useEffect(() => {
+    getRedirectResult(auth).catch((error) => {
+      console.error('Error getting redirect result', error);
+    });
+  }, []);
 
   // Sync User Profile
   useEffect(() => {
@@ -374,12 +332,7 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential && credential.accessToken) {
-        setGoogleAccessToken(credential.accessToken);
-        localStorage.setItem('googleAccessToken', credential.accessToken);
-      }
+      await signInWithPopup(auth, googleProvider);
     } catch (error) {
       console.error("Error signing in with Google", error);
     }
