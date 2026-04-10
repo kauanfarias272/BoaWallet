@@ -10,7 +10,9 @@ import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { auth, googleProvider, db } from './firebase';
-import { signInWithPopup, getRedirectResult, signOut } from 'firebase/auth';
+import { signInWithPopup, signInWithCredential, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, serverTimestamp } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -248,12 +250,7 @@ export default function App() {
     return nameToUse ? `${timeGreeting}, ${nameToUse}.` : `${timeGreeting}.`;
   };
 
-  // Handle redirect result from Firebase login
-  useEffect(() => {
-    getRedirectResult(auth).catch((error) => {
-      console.error('Error getting redirect result', error);
-    });
-  }, []);
+  // No redirect result needed - using native plugin or popup
 
   // Sync User Profile
   useEffect(() => {
@@ -332,9 +329,29 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+      if (Capacitor.isNativePlatform()) {
+        // Native: use Capacitor Firebase Auth plugin
+        const result = await FirebaseAuthentication.signInWithGoogle();
+        // Get the ID token and create a credential for Firebase JS SDK
+        const idToken = result.credential?.idToken;
+        if (idToken) {
+          const credential = GoogleAuthProvider.credential(idToken);
+          await signInWithCredential(auth, credential);
+        }
+      } else {
+        // Web: use popup
+        await signInWithPopup(auth, googleProvider);
+      }
+    } catch (error: any) {
       console.error("Error signing in with Google", error);
+      // If native fails, try popup as fallback
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await signInWithPopup(auth, googleProvider);
+        } catch (fallbackError) {
+          console.error("Fallback popup also failed", fallbackError);
+        }
+      }
     }
   };
 

@@ -1,0 +1,34 @@
+{
+  "project_info": {
+    "project_number": "550975859439",
+    "project_id": "gen-lang-client-0430232843",
+    "storage_bucket": "gen-lang-client-0430232843.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:550975859439:android:547c01ba268608db3c891a",
+        "android_client_info": {
+          "package_name": "io.boa.wallet"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "550975859439-77fmgi9k4mbh2l0cvr5qh8lb725luniq.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhYwv4KUT-R5VpQM541K-K31wlCCWuRqA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
