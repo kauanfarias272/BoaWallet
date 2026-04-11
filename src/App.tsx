@@ -396,8 +396,9 @@ export default function App() {
           localStorage.setItem('googleAccessToken', credential.accessToken);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error signing in with Google", error);
+      alert("Sign-in failed: " + (error.message || JSON.stringify(error)));
     }
   };
 
