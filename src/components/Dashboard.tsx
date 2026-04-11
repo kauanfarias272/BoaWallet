@@ -212,19 +212,41 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
     if (subscriptions.length === 0) return null;
 
     const today = new Date();
-    const currentDay = today.getDate();
+    const todayTime = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-    // Find the next due date
-    let nextSub = null;
-    let minDays = 32; // Max days in a month + 1
+    let nextSub: Subscription | null = null;
+    let minDays = Infinity;
 
     subscriptions.forEach(sub => {
-      let daysUntil = sub.dueDate - currentDay;
-      if (daysUntil < 0) {
-        // Next month
-        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-        daysUntil = (daysInMonth - currentDay) + sub.dueDate;
+      let nextDueDate: Date;
+
+      if (sub.billingCycle === 'Yearly' && sub.dueMonth) {
+        // Yearly: calculate next occurrence using dueMonth and dueDate
+        const thisYearDue = new Date(today.getFullYear(), sub.dueMonth - 1, Math.min(sub.dueDate, new Date(today.getFullYear(), sub.dueMonth, 0).getDate()));
+        const nextYearDue = new Date(today.getFullYear() + 1, sub.dueMonth - 1, Math.min(sub.dueDate, new Date(today.getFullYear() + 1, sub.dueMonth, 0).getDate()));
+        
+        if (thisYearDue.getTime() >= todayTime) {
+          nextDueDate = thisYearDue;
+        } else {
+          nextDueDate = nextYearDue;
+        }
+      } else {
+        // Monthly: calculate next occurrence this or next month
+        const daysInThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const effectiveDay = Math.min(sub.dueDate, daysInThisMonth);
+        const thisMonthDue = new Date(today.getFullYear(), today.getMonth(), effectiveDay);
+        
+        if (thisMonthDue.getTime() >= todayTime) {
+          nextDueDate = thisMonthDue;
+        } else {
+          const daysInNextMonth = new Date(today.getFullYear(), today.getMonth() + 2, 0).getDate();
+          const effectiveNextDay = Math.min(sub.dueDate, daysInNextMonth);
+          nextDueDate = new Date(today.getFullYear(), today.getMonth() + 1, effectiveNextDay);
+        }
       }
+
+      const diffMs = nextDueDate.getTime() - todayTime;
+      const daysUntil = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
       if (daysUntil < minDays) {
         minDays = daysUntil;
@@ -252,7 +274,12 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
           </div>
           <div className="text-right hidden sm:block">
             <p className="text-3xl font-serif font-medium">
-              {nextPayment.days === 0 ? t('dashboard.today') : nextPayment.days === 1 ? t('dashboard.tomorrow') : t('dashboard.inDays', { days: nextPayment.days.toString() })}
+              {nextPayment.days === 0 ? t('dashboard.today') : nextPayment.days === 1 ? t('dashboard.inOneDay' as any) : t('dashboard.inDays', { days: nextPayment.days.toString() })}
+            </p>
+          </div>
+          <div className="text-right sm:hidden">
+            <p className="text-xl font-serif font-medium">
+              {nextPayment.days === 0 ? t('dashboard.today') : nextPayment.days === 1 ? t('dashboard.inOneDay' as any) : t('dashboard.inDays', { days: nextPayment.days.toString() })}
             </p>
           </div>
         </div>

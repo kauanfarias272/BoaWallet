@@ -36,6 +36,7 @@ export interface Subscription {
   costCurrency: Currency;
   billingCycle: BillingCycle;
   dueDate: number; // 1-31
+  dueMonth?: number; // 1-12 (for yearly subscriptions)
   
   isPromotional?: boolean;
   originalCost?: number;
@@ -127,7 +128,11 @@ export const getDailyAmount = (amount: number, cycle: BillingCycle): number => {
 
 export const getSubscriptionTotalCost = (sub: Subscription): number => {
   const subItemsTotal = sub.subItems?.reduce((acc, item) => acc + (item.costAmount || 0), 0) || 0;
-  return (sub.costAmount || 0) + subItemsTotal;
+  // If early pay discount is active and has a value, use it as the base cost
+  const baseCost = (sub.hasEarlyPayDiscount && sub.earlyPayCost && sub.earlyPayCost > 0)
+    ? sub.earlyPayCost
+    : (sub.costAmount || 0);
+  return baseCost + subItemsTotal;
 };
 
 export const getEffectiveTotalCost = (sub: Subscription): { amount: number, currency: Currency } => {

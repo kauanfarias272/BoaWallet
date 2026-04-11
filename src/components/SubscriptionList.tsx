@@ -134,13 +134,28 @@ END:VCALENDAR`;
                     </td>
                     <td className="p-4">
                       <div className="flex flex-col">
-                        <span className="text-sm text-gray-900 dark:text-gray-300">Dia {sub.dueDate}</span>
+                        <span className="text-sm text-gray-900 dark:text-gray-300">
+                          {sub.billingCycle === 'Yearly' && sub.dueMonth ? (
+                            <>{`${sub.dueDate}/${sub.dueMonth < 10 ? '0' : ''}${sub.dueMonth}`}</>
+                          ) : (
+                            <>Dia {sub.dueDate}</>
+                          )}
+                        </span>
                         <span className="text-xs text-gray-500 dark:text-gray-400">{sub.billingCycle === 'Monthly' ? t('form.monthly') : t('form.yearly')}</span>
                       </div>
                     </td>
                     <td className="p-4 hidden md:table-cell">
                       <div className="flex flex-col">
-                        {sub.isPromotional && sub.originalCost ? (
+                        {sub.hasEarlyPayDiscount && sub.earlyPayCost && sub.earlyPayCost > 0 ? (
+                          <>
+                            <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                              {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
+                            </span>
+                            <span className="text-xs text-red-500 line-through">
+                              {formatCurrency(sub.costAmount, sub.costCurrency)}
+                            </span>
+                          </>
+                        ) : sub.isPromotional && sub.originalCost ? (
                           <>
                             <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
                               {formatCurrency(effectiveCost.amount, effectiveCost.currency)}
@@ -156,7 +171,7 @@ END:VCALENDAR`;
                         )}
                         {sub.subItems && sub.subItems.length > 0 && (
                           <span className="text-xs text-gray-500 dark:text-gray-400">
-                            (Base: {formatCurrency(sub.costAmount, sub.costCurrency)})
+                            (Base: {formatCurrency(sub.hasEarlyPayDiscount && sub.earlyPayCost && sub.earlyPayCost > 0 ? sub.earlyPayCost : sub.costAmount, sub.costCurrency)})
                           </span>
                         )}
                       </div>

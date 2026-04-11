@@ -90,6 +90,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
     costCurrency: 'BRL',
     billingCycle: 'Monthly',
     dueDate: 1,
+    dueMonth: new Date().getMonth() + 1,
     notes: '',
     isPromotional: false,
     originalCost: 0,
@@ -121,6 +122,16 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
   const [originalCostStr, setOriginalCostStr] = useState('0');
   const [earlyPayCostStr, setEarlyPayCostStr] = useState('0');
   const [fiatReferenceAmountStr, setFiatReferenceAmountStr] = useState('0');
+  const [dueDateStr, setDueDateStr] = useState('1');
+  const [dueMonthStr, setDueMonthStr] = useState(String(new Date().getMonth() + 1));
+  const [earlyPayDateStr, setEarlyPayDateStr] = useState('1');
+  const [cashbackPercentageStr, setCashbackPercentageStr] = useState('0');
+  const [incomeAmountStr, setIncomeAmountStr] = useState('0');
+
+  // onFocus handler to select all text for easy replacement
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    e.target.select();
+  };
 
   useEffect(() => {
     if (formData.name && formData.name.length > 2 && !formData.logoUrl) {
@@ -146,11 +157,17 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
         promoEndDate: subscription.promoEndDate || '',
         hasEarlyPayDiscount: subscription.hasEarlyPayDiscount || false,
         earlyPayDate: subscription.earlyPayDate || 1,
+        dueMonth: subscription.dueMonth || (new Date().getMonth() + 1),
       });
       setCostAmountStr(subscription.costAmount?.toString() || '0');
       setOriginalCostStr(subscription.originalCost?.toString() || '0');
       setEarlyPayCostStr(subscription.earlyPayCost?.toString() || '0');
       setFiatReferenceAmountStr(subscription.fiatReferenceAmount?.toString() || '0');
+      setDueDateStr(subscription.dueDate?.toString() || '1');
+      setDueMonthStr(subscription.dueMonth?.toString() || String(new Date().getMonth() + 1));
+      setEarlyPayDateStr(subscription.earlyPayDate?.toString() || '1');
+      setCashbackPercentageStr(subscription.cashbackPercentage?.toString() || '0');
+      setIncomeAmountStr(subscription.incomeAmount?.toString() || '0');
       
       if (subscription.paymentSource && !PAYMENT_SOURCES.includes(subscription.paymentSource)) {
         setFormData(prev => ({ ...prev, paymentSource: 'Outro' }));
@@ -214,6 +231,11 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
       originalCost: parseFloat(originalCostStr) || 0,
       earlyPayCost: parseFloat(earlyPayCostStr) || 0,
       fiatReferenceAmount: parseFloat(fiatReferenceAmountStr) || 0,
+      dueDate: parseInt(dueDateStr) || 1,
+      dueMonth: parseInt(dueMonthStr) || 1,
+      earlyPayDate: parseInt(earlyPayDateStr) || 1,
+      cashbackPercentage: parseFloat(cashbackPercentageStr) || 0,
+      incomeAmount: parseFloat(incomeAmountStr) || 0,
       paymentSource: finalPaymentSource,
       id: subscription?.id || Date.now().toString(),
     } as Subscription);
@@ -349,6 +371,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   step="0.01"
                   required
                   value={costAmountStr} 
+                  onFocus={handleFocus}
                   onChange={(e) => setCostAmountStr(e.target.value)}
                   className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 />
@@ -383,11 +406,31 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                   name="dueDate" 
                   min="1" max="31"
                   required
-                  value={formData.dueDate} 
-                  onChange={handleChange}
+                  value={dueDateStr} 
+                  onFocus={handleFocus}
+                  onChange={(e) => setDueDateStr(e.target.value)}
                   className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                 />
               </div>
+              {formData.billingCycle === 'Yearly' && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.dueMonth')}</label>
+                  <select 
+                    name="dueMonth" 
+                    value={dueMonthStr} 
+                    onChange={(e) => setDueMonthStr(e.target.value)}
+                    className="w-full px-4 py-2 bg-[#fdfbf7] dark:bg-[#121212] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const monthNames = language === 'pt' ? ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'] :
+                        language === 'es' ? ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'] :
+                        language === 'it' ? ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'] :
+                        ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                      return <option key={i + 1} value={i + 1}>{monthNames[i]}</option>;
+                    })}
+                  </select>
+                </div>
+              )}
               <div className="space-y-1">
                 <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('form.paymentMethod')}</label>
                 <select 
@@ -441,6 +484,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       step="0.01"
                       required
                       value={fiatReferenceAmountStr} 
+                      onFocus={handleFocus}
                       onChange={(e) => setFiatReferenceAmountStr(e.target.value)}
                       className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-yellow-200 dark:border-yellow-800/50 rounded-xl focus:ring-2 focus:ring-yellow-500 focus:border-transparent outline-none transition-all dark:text-white"
                     />
@@ -486,6 +530,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       type="number" 
                       step="0.01"
                       value={originalCostStr} 
+                      onFocus={handleFocus}
                       onChange={(e) => setOriginalCostStr(e.target.value)}
                       className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                     />
@@ -524,8 +569,9 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       type="number" 
                       name="earlyPayDate"
                       min="1" max="31"
-                      value={formData.earlyPayDate} 
-                      onChange={handleChange}
+                      value={earlyPayDateStr} 
+                      onFocus={handleFocus}
+                      onChange={(e) => setEarlyPayDateStr(e.target.value)}
                       className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                     />
                   </div>
@@ -535,6 +581,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                       type="number" 
                       step="0.01"
                       value={earlyPayCostStr} 
+                      onFocus={handleFocus}
                       onChange={(e) => setEarlyPayCostStr(e.target.value)}
                       className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                     />
@@ -633,8 +680,9 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                     type="number" 
                     name="cashbackPercentage" 
                     step="0.1"
-                    value={formData.cashbackPercentage} 
-                    onChange={handleChange}
+                    value={cashbackPercentageStr} 
+                    onFocus={handleFocus}
+                    onChange={(e) => setCashbackPercentageStr(e.target.value)}
                     className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   />
                 </div>
@@ -663,8 +711,9 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                     type="number" 
                     name="incomeAmount" 
                     step="0.01"
-                    value={formData.incomeAmount} 
-                    onChange={handleChange}
+                    value={incomeAmountStr} 
+                    onFocus={handleFocus}
+                    onChange={(e) => setIncomeAmountStr(e.target.value)}
                     className="w-full px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] focus:border-transparent outline-none transition-all dark:text-white"
                   />
                 </div>

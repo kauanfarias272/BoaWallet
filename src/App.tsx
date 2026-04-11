@@ -374,11 +374,27 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential && credential.accessToken) {
-        setGoogleAccessToken(credential.accessToken);
-        localStorage.setItem('googleAccessToken', credential.accessToken);
+      if (Capacitor.isNativePlatform()) {
+        // Native: use Capacitor Firebase Authentication plugin
+        const result = await FirebaseAuthentication.signInWithGoogle();
+        const idToken = result.credential?.idToken;
+        const accessToken = result.credential?.accessToken;
+        if (idToken) {
+          const credential = GoogleAuthProvider.credential(idToken, accessToken);
+          const userCredential = await signInWithCredential(auth, credential);
+          if (accessToken) {
+            setGoogleAccessToken(accessToken);
+            localStorage.setItem('googleAccessToken', accessToken);
+          }
+        }
+      } else {
+        // Web: use popup
+        const result = await signInWithPopup(auth, googleProvider);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential && credential.accessToken) {
+          setGoogleAccessToken(credential.accessToken);
+          localStorage.setItem('googleAccessToken', credential.accessToken);
+        }
       }
     } catch (error) {
       console.error("Error signing in with Google", error);
