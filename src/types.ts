@@ -65,7 +65,11 @@ export interface Subscription {
   incomeFrequency: BillingCycle;
   incomeSourceDescription: string;
   
-  status?: 'active' | 'cancelled';
+  isSingleExpense?: boolean;
+  isFlexibleDate?: boolean;
+  sharedWith?: { id: string; name: string; paymentDate?: number; paidCurrentMonth?: boolean }[];
+
+  status?: 'active' | 'cancelled_temporary' | 'cancelled_permanent';
   paymentHistory?: Record<string, 'paid' | 'skipped' | 'auto-paid'>;
 }
 

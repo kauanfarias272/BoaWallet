@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown } from 'lucide-react';
+import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown, Power } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 
@@ -13,7 +13,7 @@ interface SubscriptionListProps {
   onDelete: (id: string) => void;
 }
 
-export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete }: SubscriptionListProps) {
+export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete, onToggleStatus }: SubscriptionListProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
   const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);

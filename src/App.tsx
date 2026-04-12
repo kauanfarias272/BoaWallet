@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Dashboard } from './components/Dashboard';
+import { CalendarView } from './components/CalendarView';
 import { SubscriptionList } from './components/SubscriptionList';
 import { SubscriptionForm } from './components/SubscriptionForm';
 import { GoogleCalendarSync } from './components/GoogleCalendarSync';
@@ -9,11 +10,9 @@ import { Currency, Subscription, Adjustment, getEffectiveTotalCost } from './typ
 import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut, Download, Upload, FileText } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
-import { auth, googleProvider, db } from './firebase';
-import { signInWithPopup, signInWithCredential, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { supabase } from './supabase';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, query, serverTimestamp } from 'firebase/firestore';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import jsPDF from 'jspdf';
@@ -24,120 +23,76 @@ const LANG_OPTIONS = [
   { code: 'en', label: 'EN', flag: '🇺🇸' },
   { code: 'pt', label: 'PT', flag: '🇧🇷' },
   { code: 'es', label: 'ES', flag: '🇪🇸' },
-  { code: 'it', label: 'IT', flag: '🇮🇹' },
+  { code: 'it', label: 'IT', flag: '🇮🇹' }
 ];
 
 const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC', 'SATS'];
 
 export default function App() {
+  const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, user, authLoading, setGoogleAccessToken } = useAppContext();
+  const t = useTranslation(language);
+  
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar'>('overview');
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
-  const autoPayRanRef = useRef(false);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
-  const [baseCurrency, setBaseCurrency] = useState<Currency>('USD');
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editingSub, setEditingSub] = useState<Subscription | undefined>(undefined);
+  const [editingSub, setEditingSub] = useState<Subscription | undefined>();
   const [subToDelete, setSubToDelete] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'cashflow' | 'history'>('overview');
+  const [disablePromptSub, setDisablePromptSub] = useState<Subscription | null>(null);
+  const [baseCurrency, setBaseCurrency] = useState<Currency>(() => (localStorage.getItem('baseCurrency') as Currency) || 'BRL');
+  const [showSecretMenu, setShowSecretMenu] = useState(false);
+  const [secretClickCount, setSecretClickCount] = useState(0);
+  const secretTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [pendingPaymentSub, setPendingPaymentSub] = useState<Subscription | null>(null);
   const [cancelPromptSub, setCancelPromptSub] = useState<Subscription | null>(null);
 
-  const [clickCount, setClickCount] = useState(0);
-  const [showSecretMenu, setShowSecretMenu] = useState(false);
-
-  const { language, setLanguage, exchangeRates, userName, setUserName, user, authLoading, gender, googleAccessToken, setGoogleAccessToken } = useAppContext();
-  const t = useTranslation(language);
-
-  // Dropdown states for mobile compatibility
-  const [langOpen, setLangOpen] = useState(false);
-  const [currencyOpen, setCurrencyOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-
-  // Close dropdowns when clicking outside or switching
   useEffect(() => {
-    const handleOutsideClick = () => {
-      setLangOpen(false);
-      setCurrencyOpen(false);
-      setProfileOpen(false);
-    };
-    document.addEventListener('click', handleOutsideClick);
-    return () => document.removeEventListener('click', handleOutsideClick);
-  }, []);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
-  // Secret Menu Logic
-  const handleTitleClick = () => {
-    setClickCount(prev => {
-      const newCount = prev + 1;
-      if (newCount >= 5) {
-        setShowSecretMenu(true);
-        return 0;
-      }
-      return newCount;
-    });
-  };
-
-  // Reset click count after 2 seconds of inactivity
   useEffect(() => {
-    if (clickCount > 0) {
-      const timer = setTimeout(() => setClickCount(0), 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [clickCount]);
+    localStorage.setItem('baseCurrency', baseCurrency);
+  }, [baseCurrency]);
 
-  // Auto-payment and pending payment logic (runs once per session)
-  useEffect(() => {
-    if (!subscriptions.length || autoPayRanRef.current) return;
-    autoPayRanRef.current = true; // Prevent infinite loop
-
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    let foundPending: Subscription | null = null;
-    const subsToAutoPay: Subscription[] = [];
-
-    subscriptions.forEach(sub => {
-      if (sub.status === 'cancelled') return;
-      const history = sub.paymentHistory || {};
-      if (history[currentMonthKey]) return; // already answered
-
-      let daysSinceDue = today.getDate() - sub.dueDate;
-      if (daysSinceDue < 0 && today.getDate() < 5 && sub.dueDate > 25) {
-        daysSinceDue = today.getDate() + (new Date(today.getFullYear(), today.getMonth(), 0).getDate() - sub.dueDate);
-      }
-
-      if (daysSinceDue >= 0 && daysSinceDue <= 1) {
-        if (!foundPending) foundPending = sub;
-      } else if (daysSinceDue >= 2 && history[currentMonthKey] !== 'auto-paid') {
-        subsToAutoPay.push(sub);
-      }
-    });
-
-    if (subsToAutoPay.length > 0) {
-      Promise.all(subsToAutoPay.map(sub => handleSave({
-        ...sub,
-        paymentHistory: { ...(sub.paymentHistory || {}), [currentMonthKey]: 'auto-paid' }
-      }))).catch(console.error);
-    }
-
-    if (foundPending && !pendingPaymentSub && !cancelPromptSub) {
-      setPendingPaymentSub(foundPending);
-    }
-  }, [subscriptions]);
-
-  // Payment answer handler (single definition)
-  const handlePaymentAnswer = (sub: Subscription, answeredYes: boolean) => {
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    const history = sub.paymentHistory || {};
-
-    if (answeredYes) {
-      handleSave({ ...sub, paymentHistory: { ...history, [currentMonthKey]: 'paid' } });
-      setPendingPaymentSub(null);
+  const handleSecretClick = () => {
+    const newCount = secretClickCount + 1;
+    setSecretClickCount(newCount);
+    
+    if (newCount >= 7) {
+      setShowSecretMenu(true);
+      setSecretClickCount(0);
+      if (secretTimeoutRef.current) clearTimeout(secretTimeoutRef.current);
     } else {
-      setPendingPaymentSub(null);
-      setCancelPromptSub(sub);
+      if (secretTimeoutRef.current) clearTimeout(secretTimeoutRef.current);
+      secretTimeoutRef.current = setTimeout(() => setSecretClickCount(0), 2000);
     }
   };
 
-  // Cancel answer handler (single definition)
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return t('app.morning');
+    if (hour < 18) return t('app.afternoon');
+    return t('app.evening');
+  };
+
+  const handleToggleStatus = (id: string, currentStatus: string) => {
+    const sub = subscriptions.find(s => s.id === id);
+    if (!sub) return;
+    
+    if (currentStatus.startsWith('cancelled')) {
+      handleSave({ ...sub, status: 'active' });
+    } else {
+      setDisablePromptSub(sub);
+    }
+  };
+
+  const confirmDisable = (type: 'cancelled_temporary' | 'cancelled_permanent') => {
+    if (disablePromptSub) {
+      handleSave({ ...disablePromptSub, status: type });
+      setDisablePromptSub(null);
+    }
+  };
+
   const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
     const today = new Date();
     const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
@@ -145,7 +100,7 @@ export default function App() {
 
     handleSave({
       ...sub,
-      status: cancelled ? 'cancelled' : 'active',
+      status: cancelled ? 'cancelled_permanent' : 'active',
       paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
     });
     setCancelPromptSub(null);
@@ -155,7 +110,7 @@ export default function App() {
     const newAdj: Adjustment = { ...adjData, id: Date.now().toString() };
     if (user) {
       try {
-        await setDoc(doc(db, `users/${user.uid}/adjustments`, newAdj.id), newAdj);
+        await supabase.from('adjustments').upsert({ ...newAdj, user_id: user.id });
       } catch (error) {
         console.error("Error adding adjustment:", error);
       }
@@ -169,7 +124,7 @@ export default function App() {
   const handleRemoveAdjustment = async (id: string) => {
     if (user) {
       try {
-        await deleteDoc(doc(db, `users/${user.uid}/adjustments`, id));
+        await supabase.from('adjustments').delete().eq('id', id).eq('user_id', user.id);
       } catch (error) {
         console.error("Error removing adjustment:", error);
       }
@@ -180,189 +135,95 @@ export default function App() {
     }
   };
 
-  const exportJSON = async () => {
-    const jsonStr = JSON.stringify(subscriptions, null, 2);
-    
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const fileName = `boa-wallet-backup-${new Date().getTime()}.json`;
-        const result = await Filesystem.writeFile({
-          path: fileName,
-          data: jsonStr,
-          directory: Directory.Cache,
-          encoding: Encoding.UTF8
-        });
-        await Share.share({
-          title: 'Boa Wallet Backup',
-          text: 'Backup das assinaturas',
-          url: result.uri,
-          dialogTitle: 'Salvar/Compartilhar Backup'
-        });
-      } catch (e) {
-        console.error("Error exporting JSON natively", e);
-      }
-    } else {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(jsonStr);
-      const downloadAnchorNode = document.createElement('a');
-      downloadAnchorNode.setAttribute("href", dataStr);
-      downloadAnchorNode.setAttribute("download", "boa-wallet-backup.json");
-      document.body.appendChild(downloadAnchorNode);
-      downloadAnchorNode.click();
-      downloadAnchorNode.remove();
-    }
-    setShowSecretMenu(false);
-  };
-
-  const importJSON = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const importedSubs = JSON.parse(e.target?.result as string);
-          if (Array.isArray(importedSubs)) {
-            setSubscriptions(importedSubs);
-            // If logged in, save to Firestore
-            if (user) {
-              importedSubs.forEach(sub => handleSave(sub));
-            }
-          }
-        } catch (err) {
-          console.error("Invalid file");
-        }
-      };
-      reader.readAsText(file);
-    }
-    setShowSecretMenu(false);
-  };
-
-  const exportPDF = async () => {
-    const docPdf = new jsPDF();
-    docPdf.setFontSize(20);
-    docPdf.text('Boa Wallet - Relatório de Assinaturas', 14, 22);
-    docPdf.setFontSize(10);
-    docPdf.text('Gerado automaticamente por Boa Wallet', 14, 30);
-
-    const tableData = subscriptions.map(sub => {
-      const effectiveCost = getEffectiveTotalCost(sub);
-      return [
-        sub.name,
-        t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any),
-        formatCurrency(effectiveCost.amount, effectiveCost.currency),
-        t(`form.${sub.billingCycle}` as any) === `form.${sub.billingCycle}` ? sub.billingCycle : t(`form.${sub.billingCycle}` as any)
-      ];
-    });
-
-    autoTable(docPdf, {
-      startY: 40,
-      head: [['Nome', 'Categoria', 'Custo', 'Ciclo']],
-      body: tableData,
-    });
-
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const pdfBase64 = docPdf.output('datauristring').split(',')[1];
-        const fileName = `boa-wallet-relatorio-${new Date().getTime()}.pdf`;
-        const result = await Filesystem.writeFile({
-          path: fileName,
-          data: pdfBase64,
-          directory: Directory.Cache,
-        });
-        await Share.share({
-          title: 'Relatório Boa Wallet',
-          text: 'Relatório em PDF de suas assinaturas',
-          url: result.uri,
-          dialogTitle: 'Salvar/Compartilhar PDF'
-        });
-      } catch (e) {
-        console.error("Error exporting PDF natively", e);
-      }
-    } else {
-      docPdf.save('boa-wallet-relatorio.pdf');
-    }
-    
-    setShowSecretMenu(false);
-  };
-
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    let timeGreeting = '';
-    if (hour < 12) timeGreeting = t('app.goodMorning');
-    else if (hour < 18) timeGreeting = t('app.goodAfternoon');
-    else timeGreeting = t('app.goodEvening');
-
-    const nameToUse = user?.displayName ? user.displayName.split(' ')[0] : userName;
-    return nameToUse ? `${timeGreeting}, ${nameToUse}.` : `${timeGreeting}.`;
-  };
-
-  // No redirect result needed - using native plugin or popup
-
   // Sync User Profile
   useEffect(() => {
     if (user) {
-      const userRef = doc(db, 'users', user.uid);
-      setDoc(userRef, {
-        uid: user.uid,
+      supabase.from('users').upsert({
+        id: user.id,
         email: user.email,
-        name: user.displayName || userName,
+        name: user.user_metadata?.full_name || userName,
         language,
-        baseCurrency,
-        createdAt: serverTimestamp()
-      }, { merge: true }).catch(console.error);
+        base_currency: baseCurrency,
+        updated_at: new Date().toISOString()
+      }).then(({ error }) => {
+        if (error) console.error(error);
+      });
     }
   }, [user, language, baseCurrency, userName]);
 
-  // Sync with Firestore
+  // Sync with Supabase
   useEffect(() => {
     if (!user) {
-      // If not logged in, load from local storage
       const localSubs = localStorage.getItem('subscriptions');
       if (localSubs) {
-        try {
-          setSubscriptions(JSON.parse(localSubs));
-        } catch (e) {
-          console.error("Error parsing local subscriptions", e);
-        }
+        try { setSubscriptions(JSON.parse(localSubs)); } catch (e) {}
       }
       const localAdj = localStorage.getItem('boa_adjustments');
       if (localAdj) {
-        try {
-          setAdjustments(JSON.parse(localAdj));
-        } catch (e) {
-          console.error("Error parsing local adjustments", e);
-        }
+        try { setAdjustments(JSON.parse(localAdj)); } catch (e) {}
       }
       return;
     }
 
-    // User is logged in, sync from Firestore
-    const qSubs = query(collection(db, `users/${user.uid}/subscriptions`));
-    const unsubscribeSubs = onSnapshot(qSubs, (snapshot) => {
-      const subs: Subscription[] = [];
-      snapshot.forEach((doc) => {
-        subs.push(doc.data() as Subscription);
-      });
-      setSubscriptions(subs);
-    }, (error) => {
-      console.error("Error fetching subscriptions from Firestore:", error);
-    });
+    let initialLoad = true;
+    const fetchInitialData = async () => {
+      const { data: subs } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
+      if (subs) setSubscriptions(subs as any[]);
 
-    const qAdj = query(collection(db, `users/${user.uid}/adjustments`));
-    const unsubscribeAdj = onSnapshot(qAdj, (snapshot) => {
-      const adjs: Adjustment[] = [];
-      snapshot.forEach((doc) => {
-        adjs.push(doc.data() as Adjustment);
-      });
-      setAdjustments(adjs);
-    }, (error) => {
-      console.error("Error fetching adjustments from Firestore:", error);
-    });
+      const { data: adjs } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
+      if (adjs) setAdjustments(adjs as any[]);
+    };
+
+    fetchInitialData();
+
+    const subsSubscription = supabase.channel('subs_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions', filter: `user_id=eq.${user.id}` }, payload => {
+        if (!initialLoad) fetchInitialData();
+      }).subscribe();
+
+    const adjsSubscription = supabase.channel('adjs_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'adjustments', filter: `user_id=eq.${user.id}` }, payload => {
+        if (!initialLoad) fetchInitialData();
+      }).subscribe();
+    
+    initialLoad = false;
 
     return () => {
-      unsubscribeSubs();
-      unsubscribeAdj();
+      supabase.removeChannel(subsSubscription);
+      supabase.removeChannel(adjsSubscription);
     };
   }, [user]);
+
+  // Admin JSON Export (Daily sync)
+  useEffect(() => {
+    if (user && subscriptions.length > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      const lastSync = localStorage.getItem('last_admin_sync_' + user.id);
+      
+      if (lastSync !== today) {
+        const exportData = {
+          userId: user.id,
+          userName: userName,
+          subscriptions,
+          adjustments,
+          timestamp: new Date().toISOString()
+        };
+        
+        supabase.from('admin_exports').upsert({
+          id: user.id,
+          user_id: user.id,
+          data: exportData,
+          updated_at: new Date().toISOString()
+        }).then(({ error }) => {
+          if (!error) {
+            localStorage.setItem('last_admin_sync_' + user.id, today);
+          } else {
+            console.error("Failed to export admin data", error);
+          }
+        });
+      }
+    }
+  }, [user, subscriptions, adjustments, userName]);
 
   // Save to local storage as fallback when not logged in
   useEffect(() => {
@@ -375,36 +236,25 @@ export default function App() {
   const handleLogin = async () => {
     try {
       if (Capacitor.isNativePlatform()) {
-        // Native: use Capacitor Firebase Authentication plugin
         const result = await FirebaseAuthentication.signInWithGoogle();
         const idToken = result.credential?.idToken;
-        const accessToken = result.credential?.accessToken;
         if (idToken) {
-          const credential = GoogleAuthProvider.credential(idToken, accessToken);
-          const userCredential = await signInWithCredential(auth, credential);
-          if (accessToken) {
-            setGoogleAccessToken(accessToken);
-            localStorage.setItem('googleAccessToken', accessToken);
-          }
+          const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+          if (error) throw error;
         }
       } else {
-        // Web: use popup
-        const result = await signInWithPopup(auth, googleProvider);
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential && credential.accessToken) {
-          setGoogleAccessToken(credential.accessToken);
-          localStorage.setItem('googleAccessToken', credential.accessToken);
-        }
+        const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' });
+        if (error) throw error;
       }
     } catch (error: any) {
-      console.error("Error signing in with Google", error);
+      console.error("Error signing in", error);
       alert("Sign-in failed: " + (error.message || JSON.stringify(error)));
     }
   };
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
       setUserName('');
     } catch (error) {
       console.error("Error signing out", error);
@@ -414,17 +264,15 @@ export default function App() {
   const handleSave = async (sub: Subscription) => {
     if (user) {
       try {
-        const subRef = doc(db, `users/${user.uid}/subscriptions`, sub.id);
         const isNew = !sub.createdAt || typeof sub.createdAt === 'string';
-
-        await setDoc(subRef, {
+        await supabase.from('subscriptions').upsert({
           ...sub,
-          userId: user.uid,
-          createdAt: isNew ? serverTimestamp() : sub.createdAt,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
+          user_id: user.id,
+          createdAt: isNew ? new Date().toISOString() : sub.createdAt,
+          updatedAt: new Date().toISOString()
+        });
       } catch (error) {
-        console.error("Error saving subscription to Firestore:", error);
+        console.error("Error saving subscription:", error);
       }
     } else {
       if (editingSub) {
@@ -445,9 +293,9 @@ export default function App() {
     if (subToDelete) {
       if (user) {
         try {
-          await deleteDoc(doc(db, `users/${user.uid}/subscriptions`, subToDelete));
+          await supabase.from('subscriptions').delete().eq('id', subToDelete).eq('user_id', user.id);
         } catch (error) {
-          console.error("Error deleting subscription from Firestore:", error);
+          console.error("Error deleting subscription:", error);
         }
       } else {
         setSubscriptions(subs => subs.filter(s => s.id !== subToDelete));
@@ -477,136 +325,139 @@ export default function App() {
       const currentDay = today.getDate();
 
       subscriptions.forEach(sub => {
-        if (sub.dueDate === currentDay) {
-          showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }));
-        } else if (sub.dueDate === currentDay + 1 || (currentDay === new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() && sub.dueDate === 1)) {
-          showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.tomorrow') }));
+        if (sub.status === 'cancelled_temporary') {
+          const dayOfYear = Math.floor((today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 1000 / 60 / 60 / 24);
+          if (dayOfYear % 10 === 0) {
+            showNotification('Assinatura Pausada', `Você deseja reativar a assinatura ${sub.name}?`);
+          }
+        } else if (sub.status !== 'cancelled_permanent') {
+          if (sub.dueDate === currentDay) {
+            showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }));
+          } else if (sub.hasEarlyPayDiscount && sub.earlyPayDate === currentDay) {
+            showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }) + ' (Desconto)');
+          }
         }
       });
     };
 
-    const showNotification = (title: string, body: string) => {
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(title, { body, icon: '/logo.png' });
-      }
-    };
-
-    // Check once on load
+    const interval = setInterval(checkReminders, 12 * 60 * 60 * 1000);
     checkReminders();
-
-    // Check every hour
-    const interval = setInterval(checkReminders, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [subscriptions, t]);
 
+  const showNotification = (title: string, body: string) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/logo_boa.png' });
+    }
+  };
+
+  const exportPDF = () => {
+    const doc = new jsPDF();
+    doc.text(t('app.title'), 20, 20);
+    const data = subscriptions.map(sub => [sub.name, sub.category, formatCurrency(getEffectiveTotalCost(sub).amount, getEffectiveTotalCost(sub).currency)]);
+    autoTable(doc, {
+      head: [[t('app.name'), t('app.category'), t('app.cost')]],
+      body: data,
+      startY: 30
+    });
+    doc.save('boa-wallet-report.pdf');
+  };
+
+  const exportJSON = async () => {
+    const data = JSON.stringify({ subscriptions, adjustments }, null, 2);
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const result = await Filesystem.writeFile({
+          path: 'boa-wallet-export.json',
+          data,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8
+        });
+        await Share.share({
+          title: 'Boa Wallet Export',
+          url: result.uri,
+          dialogTitle: 'Exportar JSON'
+        });
+      } catch (e) {
+        console.error('Export failed', e);
+      }
+    } else {
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'boa-wallet-export.json';
+      a.click();
+    }
+  };
+
+  const importJSON = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target?.result as string);
+          if (data.subscriptions) setSubscriptions(data.subscriptions);
+          if (data.adjustments) setAdjustments(data.adjustments);
+          alert(t('app.importSuccess'));
+        } catch (err) {
+          alert('Erro ao importar JSON');
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#121212] text-gray-100 font-sans pb-20 transition-colors duration-200">
-      {/* Header */}
-      <header className="bg-[#121212]/80 backdrop-blur-md border-b border-gray-800/50 sticky top-0 z-30 transition-colors duration-200">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="BoaWallet Logo" className="w-10 h-10 rounded-full object-cover shadow-sm" onError={(e) => { e.currentTarget.src = 'https://api.dicebear.com/7.x/bottts/svg?seed=BoaWallet'; }} />
-            <h1
-              className="text-2xl font-serif font-medium tracking-tight text-white flex items-center cursor-pointer select-none"
-              onClick={handleTitleClick}
-            >
+    <div className={`min-h-screen transition-colors ${theme === 'dark' ? 'dark bg-[#0a0a0a]' : 'bg-[#fdfbf7]'}`}>
+      <header className="sticky top-0 z-40 w-full bg-[#fdfbf7]/80 dark:bg-[#0a0a0a]/80 backdrop-blur-md border-b border-gray-100 dark:border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={handleSecretClick}>
+            <div className="w-10 h-10 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-xl flex items-center justify-center shadow-lg transform active:scale-95 transition-transform">
+              <span className="text-white dark:text-[#0a0a0a] font-serif text-2xl">B</span>
+            </div>
+            <h1 className="text-2xl font-serif font-medium tracking-tight text-gray-900 dark:text-white hidden sm:block">
               {t('app.title')}
-              {(baseCurrency === 'BTC' || baseCurrency === 'SATS') && (
-                <Zap className="ml-1.5 text-yellow-400" size={20} fill="currentColor" />
-              )}
             </h1>
           </div>
 
-          <div className="flex items-center gap-3 sm:gap-6">
-            <div className="flex items-center bg-[#1a1a1a] border border-gray-800 rounded-full p-1 shadow-inner">
-              {/* Language Dropdown */}
-              <div className="relative" onClick={(e) => { e.stopPropagation(); setLangOpen(!langOpen); setCurrencyOpen(false); setProfileOpen(false); }}>
-                <button className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full hover:bg-[#2a2a2a] transition-colors text-sm font-medium text-gray-300">
-                  <span>{LANG_OPTIONS.find(l => l.code === language)?.flag}</span>
-                  <span className="hidden sm:inline">{LANG_OPTIONS.find(l => l.code === language)?.label}</span>
-                  <ChevronDown size={14} className="text-gray-500 hidden sm:block" />
+          <div className="flex items-center gap-2 sm:gap-4">
+            <div className="flex items-center bg-gray-100 dark:bg-[#1a1a1a] rounded-full p-1 border border-gray-200 dark:border-gray-800">
+              {LANG_OPTIONS.map(opt => (
+                <button
+                  key={opt.code}
+                  onClick={() => setLanguage(opt.code as Language)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${language === opt.code ? 'bg-white dark:bg-[#333] text-[#5A5A40] dark:text-[#d0d0a0] shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                >
+                  <span className="mr-1">{opt.flag}</span>
+                  {opt.label}
                 </button>
-                <div className={`absolute top-full right-0 mt-2 w-32 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 overflow-hidden ${langOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
-                  {LANG_OPTIONS.map(lang => (
-                    <button
-                      key={lang.code}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setLanguage(lang.code as Language);
-                        setLangOpen(false);
-                      }}
-                      className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm ${language === lang.code ? 'text-white bg-[#2a2a2a]' : 'text-gray-400'}`}
-                    >
-                      <span>{lang.flag}</span>
-                      <span>{lang.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="w-px h-4 bg-gray-800 mx-1"></div>
-
-              {/* Currency Dropdown */}
-              <div className="relative" onClick={(e) => { e.stopPropagation(); setCurrencyOpen(!currencyOpen); setLangOpen(false); setProfileOpen(false); }}>
-                <button className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full hover:bg-[#2a2a2a] transition-colors text-sm font-medium text-gray-300">
-                  <span>{baseCurrency === 'SATS' ? '₿' : baseCurrency === 'BTC' ? '₿' : '$'}</span>
-                  <span className="hidden sm:inline">{baseCurrency}</span>
-                  <ChevronDown size={14} className="text-gray-500 hidden sm:block" />
-                </button>
-                <div className={`absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 max-h-64 overflow-y-auto ${currencyOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
-                  {CURRENCIES.map(curr => (
-                    <button
-                      key={curr}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setBaseCurrency(curr as Currency);
-                        setCurrencyOpen(false);
-                      }}
-                      className={`w-full flex items-center justify-between px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm ${baseCurrency === curr ? 'text-white bg-[#2a2a2a]' : 'text-gray-400'}`}
-                    >
-                      <span>{curr}</span>
-                      {curr === 'SATS' && <span className="text-xs text-gray-500">Satoshi</span>}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              ))}
             </div>
 
-            <div className="hidden lg:block">
-              <GoogleCalendarSync subscriptions={subscriptions} />
-            </div>
-
-            {/* Google Login / User Profile */}
-            {!authLoading && (
-              <div className="flex items-center">
+            {authLoading ? (
+              <div className="w-8 h-8 rounded-full border-2 border-[#5A5A40] border-t-transparent animate-spin"></div>
+            ) : (
+              <div className="flex items-center gap-2">
                 {user ? (
-                  <div className="relative" onClick={(e) => { e.stopPropagation(); setProfileOpen(!profileOpen); setLangOpen(false); setCurrencyOpen(false); }}>
-                    <button className="flex items-center gap-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-gray-800 px-3 py-1.5 rounded-full transition-colors">
-                      <img src={user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${user.displayName || 'User'}`} alt="Profile" className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
-                      <span className="text-sm font-medium text-gray-300 hidden sm:block">{user.displayName?.split(' ')[0]}</span>
-                    </button>
-                    <div className={`absolute top-full right-0 mt-2 w-48 bg-[#1a1a1a] border border-gray-800 rounded-2xl shadow-xl transition-all z-50 overflow-hidden ${profileOpen ? 'opacity-100 visible' : 'opacity-0 invisible'}`}>
-                      <div className="px-4 py-3 border-b border-gray-800">
-                        <p className="text-sm font-medium text-white truncate">{user.displayName}</p>
-                        <p className="text-xs text-gray-500 truncate">{user.email}</p>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleLogout();
-                          setProfileOpen(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#2a2a2a] transition-colors text-sm text-red-400"
-                      >
-                        <LogOut size={16} />
-                        <span>Sair</span>
-                      </button>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-end hidden md:flex">
+                      <span className="text-xs font-medium text-gray-900 dark:text-white">{user.user_metadata?.full_name || userName}</span>
+                      <button onClick={handleLogout} className="text-[10px] text-gray-500 hover:text-red-500 transition-colors">Sair</button>
                     </div>
+                    {user.user_metadata?.avatar_url ? (
+                      <img src={user.user_metadata.avatar_url} alt="Profile" className="w-9 h-9 rounded-full border border-gray-200 dark:border-gray-700 shadow-sm" />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center text-xs font-medium text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700">
+                        {userName?.charAt(0) || 'U'}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <button
                     onClick={handleLogin}
-                    className="flex items-center gap-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-gray-800 px-3 py-1.5 rounded-full transition-colors text-sm font-medium text-gray-300"
+                    className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-800 rounded-full text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors shadow-sm"
                   >
                     <LogIn size={16} />
                     <span className="hidden sm:inline">Entrar</span>
@@ -652,6 +503,13 @@ export default function App() {
             {activeTab === 'cashflow' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
           <button
+            onClick={() => setActiveTab('calendar')}
+            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'calendar' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            Calendário
+            {activeTab === 'calendar' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+          </button>
+          <button
             onClick={() => setActiveTab('history')}
             className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'history' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
           >
@@ -663,7 +521,7 @@ export default function App() {
         {activeTab === 'overview' && (
           <>
             <Dashboard
-              subscriptions={subscriptions.filter(s => s.status !== 'cancelled')}
+              subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))}
               baseCurrency={baseCurrency}
               exchangeRates={exchangeRates}
               adjustments={adjustments}
@@ -674,11 +532,12 @@ export default function App() {
             <div className="grid grid-cols-1 gap-8">
               <div className="col-span-1">
                 <SubscriptionList
-                  subscriptions={subscriptions.filter(s => s.status !== 'cancelled')}
+                  subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))}
                   baseCurrency={baseCurrency}
                   exchangeRates={exchangeRates}
                   onEdit={openEdit}
                   onDelete={handleDelete}
+                  onToggleStatus={handleToggleStatus}
                 />
               </div>
             </div>
@@ -686,7 +545,16 @@ export default function App() {
         )}
 
         {activeTab === 'cashflow' && (
-          <Cashflow subscriptions={subscriptions.filter(s => s.status !== 'cancelled')} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+          <Cashflow subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+        )}
+
+        {activeTab === 'calendar' && (
+          <CalendarView 
+             subscriptions={subscriptions} 
+             baseCurrency={baseCurrency} 
+             exchangeRates={exchangeRates} 
+             onEdit={openEdit} 
+          />
         )}
 
         {activeTab === 'history' && (
@@ -694,11 +562,12 @@ export default function App() {
             <div className="col-span-1 opacity-60">
               <h2 className="text-xl font-medium text-white mb-4">{t('app.disabledPayments') || 'Pagamentos Desativados'}</h2>
               <SubscriptionList
-                subscriptions={subscriptions.filter(s => s.status === 'cancelled')}
+                subscriptions={subscriptions.filter(s => s.status?.startsWith('cancelled'))}
                 baseCurrency={baseCurrency}
                 exchangeRates={exchangeRates}
                 onEdit={openEdit}
                 onDelete={handleDelete}
+                onToggleStatus={handleToggleStatus}
               />
             </div>
           </div>
@@ -752,6 +621,40 @@ export default function App() {
               >
                 <FileText size={18} className="text-red-500" />
                 {t('app.exportPdf')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Disable Prompt Modal */}
+      {disablePromptSub && (
+        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+              Desabilitar Assinatura
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+              Esta é uma pausa temporária (onde você pode querer reativar depois e receber lembretes) ou um cancelamento permanente?
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => confirmDisable('cancelled_temporary')}
+                className="px-6 py-3 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 rounded-xl transition-colors shadow-sm"
+              >
+                Pausa Temporária
+              </button>
+              <button
+                onClick={() => confirmDisable('cancelled_permanent')}
+                className="px-6 py-3 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors shadow-sm"
+              >
+                Cancelamento Permanente
+              </button>
+              <button
+                onClick={() => setDisablePromptSub(null)}
+                className="px-6 py-2.5 mt-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
+              >
+                Voltar
               </button>
             </div>
           </div>

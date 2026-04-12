@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Language } from './i18n';
 import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
-import { auth } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { supabase } from './supabase';
+import { User } from '@supabase/supabase-js';
 
 export type Gender = 'M' | 'F' | 'N';
 
@@ -43,14 +43,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    // Initial fetch
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const currentUser = session?.user || null;
       setUser(currentUser);
-      if (currentUser?.displayName && !userName) {
-        setUserName(currentUser.displayName);
+      if (currentUser?.user_metadata?.full_name && !userName) {
+        setUserName(currentUser.user_metadata.full_name);
       }
       setAuthLoading(false);
     });
-    return () => unsubscribe();
+
+    // Listen to changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const currentUser = session?.user || null;
+      setUser(currentUser);
+      if (currentUser?.user_metadata?.full_name && !userName) {
+        setUserName(currentUser.user_metadata.full_name);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, [userName]);
 
   useEffect(() => {
