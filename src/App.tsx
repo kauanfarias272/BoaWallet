@@ -479,42 +479,58 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
         <div className="space-y-2">
-          <h2 className="text-4xl font-serif font-medium text-white">
+          <h2 className="text-4xl font-serif font-medium text-gray-900 dark:text-white">
             {getGreeting()}
           </h2>
-          <p className="text-gray-400 text-lg">
+          <p className="text-gray-500 dark:text-gray-400 text-lg">
             {t('app.summary')}
           </p>
         </div>
 
-        <div className="flex items-center gap-6 border-b border-gray-800">
+        <div className="flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
           <button
             onClick={() => setActiveTab('overview')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'overview' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`pb-3 text-sm font-medium transition-colors relative ${
+              activeTab === 'overview'
+                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
+                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+            }`}
           >
             {t('app.overview')}
-            {activeTab === 'overview' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+            {activeTab === 'overview' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
           <button
             onClick={() => setActiveTab('cashflow')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'cashflow' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`pb-3 text-sm font-medium transition-colors relative ${
+              activeTab === 'cashflow'
+                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
+                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+            }`}
           >
             {t('app.cashflow')}
-            {activeTab === 'cashflow' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+            {activeTab === 'cashflow' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
           <button
             onClick={() => setActiveTab('calendar')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'calendar' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`pb-3 text-sm font-medium transition-colors relative ${
+              activeTab === 'calendar'
+                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
+                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+            }`}
           >
             Calendário
-            {activeTab === 'calendar' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+            {activeTab === 'calendar' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'history' ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`pb-3 text-sm font-medium transition-colors relative ${
+              activeTab === 'history'
+                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
+                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+            }`}
           >
             {t('app.disabledPayments') || 'Desativados'}
-            {activeTab === 'history' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-t-full"></div>}
+            {activeTab === 'history' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
           </button>
         </div>
 
@@ -560,7 +576,7 @@ export default function App() {
         {activeTab === 'history' && (
           <div className="grid grid-cols-1 gap-8">
             <div className="col-span-1 opacity-60">
-              <h2 className="text-xl font-medium text-white mb-4">{t('app.disabledPayments') || 'Pagamentos Desativados'}</h2>
+              <h2 className="text-xl font-medium text-gray-900 dark:text-white mb-4">{t('app.disabledPayments') || 'Pagamentos Desativados'}</h2>
               <SubscriptionList
                 subscriptions={subscriptions.filter(s => s.status?.startsWith('cancelled'))}
                 baseCurrency={baseCurrency}
