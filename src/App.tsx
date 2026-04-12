@@ -3,11 +3,11 @@ import { Dashboard } from './components/Dashboard';
 import { CalendarView } from './components/CalendarView';
 import { SubscriptionList } from './components/SubscriptionList';
 import { SubscriptionForm } from './components/SubscriptionForm';
-import { GoogleCalendarSync } from './components/GoogleCalendarSync';
 import { WelcomeModal } from './components/WelcomeModal';
 import { Cashflow } from './components/Cashflow';
+import { ClientsTab } from './components/ClientsTab';
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost } from './types';
-import { Plus, AlertTriangle, Globe, DollarSign, ChevronDown, Zap, LogIn, LogOut, Download, Upload, FileText } from 'lucide-react';
+import { Plus, AlertTriangle, LogIn, Download, Upload, FileText, Moon, Sun, ChevronDown } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
@@ -26,38 +26,45 @@ const LANG_OPTIONS = [
   { code: 'it', label: 'IT', flag: '🇮🇹' }
 ];
 
-const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC', 'SATS'];
+const CURRENCIES: Currency[] = ['BRL','USD','EUR','GBP','JPY','TRY','ARS','INR','IDR','CAD','AUD','CHF','CNY','MXN','BTC','SATS'];
 
 export default function App() {
-  const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, user, authLoading, setGoogleAccessToken } = useAppContext();
+  const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, user, authLoading } = useAppContext();
   const t = useTranslation(language);
-  
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar'>('overview');
+
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar' | 'clients'>('overview');
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingSub, setEditingSub] = useState<Subscription | undefined>();
   const [subToDelete, setSubToDelete] = useState<string | null>(null);
   const [disablePromptSub, setDisablePromptSub] = useState<Subscription | null>(null);
+  const [disableType, setDisableType] = useState<'permanent' | 'temporary' | null>(null);
+  const [renewPromptSub, setRenewPromptSub] = useState<Subscription | null>(null);
   const [baseCurrency, setBaseCurrency] = useState<Currency>(() => (localStorage.getItem('baseCurrency') as Currency) || 'BRL');
+  const [showCurrencyMenu, setShowCurrencyMenu] = useState(false);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
   const [secretClickCount, setSecretClickCount] = useState(0);
   const secretTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [pendingPaymentSub, setPendingPaymentSub] = useState<Subscription | null>(null);
-  const [cancelPromptSub, setCancelPromptSub] = useState<Subscription | null>(null);
+  const currencyRef = useRef<HTMLDivElement>(null);
 
+  // Close currency dropdown on outside click
   useEffect(() => {
-    localStorage.setItem('theme', theme);
-  }, [theme]);
+    const handler = (e: MouseEvent) => {
+      if (currencyRef.current && !currencyRef.current.contains(e.target as Node)) {
+        setShowCurrencyMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
-  useEffect(() => {
-    localStorage.setItem('baseCurrency', baseCurrency);
-  }, [baseCurrency]);
+  useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
+  useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
 
   const handleSecretClick = () => {
     const newCount = secretClickCount + 1;
     setSecretClickCount(newCount);
-    
     if (newCount >= 7) {
       setShowSecretMenu(true);
       setSecretClickCount(0);
@@ -75,45 +82,48 @@ export default function App() {
     return t('app.evening');
   };
 
+  // --- Disable flow ---
   const handleToggleStatus = (id: string, currentStatus: string) => {
     const sub = subscriptions.find(s => s.id === id);
     if (!sub) return;
-    
     if (currentStatus.startsWith('cancelled')) {
       handleSave({ ...sub, status: 'active' });
     } else {
       setDisablePromptSub(sub);
+      setDisableType(null);
     }
   };
 
-  const confirmDisable = (type: 'cancelled_temporary' | 'cancelled_permanent') => {
+  const confirmDisablePermanent = () => {
     if (disablePromptSub) {
-      handleSave({ ...disablePromptSub, status: type });
+      handleSave({ ...disablePromptSub, status: 'cancelled_permanent' });
       setDisablePromptSub(null);
+      setDisableType(null);
     }
   };
 
-  const handleCancelAnswer = (sub: Subscription, cancelled: boolean) => {
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
-    const history = sub.paymentHistory || {};
-
-    handleSave({
-      ...sub,
-      status: cancelled ? 'cancelled_permanent' : 'active',
-      paymentHistory: { ...history, [currentMonthKey]: 'skipped' }
-    });
-    setCancelPromptSub(null);
+  const confirmDisableTemporary = () => {
+    // Ask if they want auto-renew next month
+    setDisableType('temporary');
   };
 
+  const confirmTemporaryWithRenew = (autoRenew: boolean) => {
+    if (disablePromptSub) {
+      handleSave({
+        ...disablePromptSub,
+        status: 'cancelled_temporary',
+        temporaryAutoRenew: autoRenew,
+      } as any);
+      setDisablePromptSub(null);
+      setDisableType(null);
+    }
+  };
+
+  // --- Adjustments ---
   const handleAddAdjustment = async (adjData: Omit<Adjustment, 'id'>) => {
     const newAdj: Adjustment = { ...adjData, id: Date.now().toString() };
     if (user) {
-      try {
-        await supabase.from('adjustments').upsert({ ...newAdj, user_id: user.id });
-      } catch (error) {
-        console.error("Error adding adjustment:", error);
-      }
+      await supabase.from('adjustments').upsert({ ...newAdj, user_id: user.id });
     } else {
       const updated = [...adjustments, newAdj];
       setAdjustments(updated);
@@ -123,11 +133,7 @@ export default function App() {
 
   const handleRemoveAdjustment = async (id: string) => {
     if (user) {
-      try {
-        await supabase.from('adjustments').delete().eq('id', id).eq('user_id', user.id);
-      } catch (error) {
-        console.error("Error removing adjustment:", error);
-      }
+      await supabase.from('adjustments').delete().eq('id', id).eq('user_id', user.id);
     } else {
       const updated = adjustments.filter(a => a.id !== id);
       setAdjustments(updated);
@@ -135,97 +141,50 @@ export default function App() {
     }
   };
 
-  // Sync User Profile
+  // --- Supabase sync ---
   useEffect(() => {
     if (user) {
       supabase.from('users').upsert({
-        id: user.id,
-        email: user.email,
+        id: user.id, email: user.email,
         name: user.user_metadata?.full_name || userName,
-        language,
-        base_currency: baseCurrency,
+        language, base_currency: baseCurrency,
         updated_at: new Date().toISOString()
-      }).then(({ error }) => {
-        if (error) console.error(error);
       });
     }
   }, [user, language, baseCurrency, userName]);
 
-  // Sync with Supabase
   useEffect(() => {
     if (!user) {
-      const localSubs = localStorage.getItem('subscriptions');
-      if (localSubs) {
-        try { setSubscriptions(JSON.parse(localSubs)); } catch (e) {}
-      }
-      const localAdj = localStorage.getItem('boa_adjustments');
-      if (localAdj) {
-        try { setAdjustments(JSON.parse(localAdj)); } catch (e) {}
-      }
+      try { const s = localStorage.getItem('subscriptions'); if (s) setSubscriptions(JSON.parse(s)); } catch {}
+      try { const a = localStorage.getItem('boa_adjustments'); if (a) setAdjustments(JSON.parse(a)); } catch {}
       return;
     }
-
-    let initialLoad = true;
-    const fetchInitialData = async () => {
+    const fetchAll = async () => {
       const { data: subs } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
       if (subs) setSubscriptions(subs as any[]);
-
       const { data: adjs } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
       if (adjs) setAdjustments(adjs as any[]);
     };
-
-    fetchInitialData();
-
-    const subsSubscription = supabase.channel('subs_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions', filter: `user_id=eq.${user.id}` }, payload => {
-        if (!initialLoad) fetchInitialData();
-      }).subscribe();
-
-    const adjsSubscription = supabase.channel('adjs_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'adjustments', filter: `user_id=eq.${user.id}` }, payload => {
-        if (!initialLoad) fetchInitialData();
-      }).subscribe();
-    
-    initialLoad = false;
-
-    return () => {
-      supabase.removeChannel(subsSubscription);
-      supabase.removeChannel(adjsSubscription);
-    };
+    fetchAll();
+    const ch1 = supabase.channel('subs').on('postgres_changes',{event:'*',schema:'public',table:'subscriptions',filter:`user_id=eq.${user.id}`}, fetchAll).subscribe();
+    const ch2 = supabase.channel('adjs').on('postgres_changes',{event:'*',schema:'public',table:'adjustments',filter:`user_id=eq.${user.id}`}, fetchAll).subscribe();
+    return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
   }, [user]);
 
-  // Admin JSON Export (Daily sync)
+  // Daily admin export
   useEffect(() => {
-    if (user && subscriptions.length > 0) {
-      const today = new Date().toISOString().split('T')[0];
-      const lastSync = localStorage.getItem('last_admin_sync_' + user.id);
-      
-      if (lastSync !== today) {
-        const exportData = {
-          userId: user.id,
-          userName: userName,
-          subscriptions,
-          adjustments,
-          timestamp: new Date().toISOString()
-        };
-        
-        supabase.from('admin_exports').upsert({
-          id: user.id,
-          user_id: user.id,
-          data: exportData,
-          updated_at: new Date().toISOString()
-        }).then(({ error }) => {
-          if (!error) {
-            localStorage.setItem('last_admin_sync_' + user.id, today);
-          } else {
-            console.error("Failed to export admin data", error);
-          }
-        });
-      }
-    }
+    if (!user || subscriptions.length === 0) return;
+    const today = new Date().toISOString().split('T')[0];
+    if (localStorage.getItem('last_admin_sync_' + user.id) === today) return;
+    supabase.from('admin_exports').upsert({
+      id: user.id, user_id: user.id,
+      data: { userId: user.id, userName, subscriptions, adjustments, timestamp: new Date().toISOString() },
+      updated_at: new Date().toISOString()
+    }).then(({ error }) => {
+      if (!error) localStorage.setItem('last_admin_sync_' + user.id, today);
+    });
   }, [user, subscriptions, adjustments, userName]);
 
-  // Save to local storage as fallback when not logged in
   useEffect(() => {
     if (!user) {
       localStorage.setItem('subscriptions', JSON.stringify(subscriptions));
@@ -233,322 +192,335 @@ export default function App() {
     }
   }, [subscriptions, adjustments, user]);
 
+  // Auto-renew check for temporary cancelled subs
+  useEffect(() => {
+    const today = new Date();
+    subscriptions.forEach(sub => {
+      if ((sub as any).status === 'cancelled_temporary' && (sub as any).temporaryAutoRenew === true) {
+        const month = today.getMonth();
+        const year = today.getFullYear();
+        const key = `auto_renew_${sub.id}_${year}_${month}`;
+        if (!localStorage.getItem(key)) {
+          handleSave({ ...sub, status: 'active' } as any);
+          localStorage.setItem(key, '1');
+        }
+      }
+    });
+  }, [subscriptions]);
+
+  // 10-day reminder for temporary cancelled (no auto-renew)
+  useEffect(() => {
+    const check = () => {
+      subscriptions.forEach(sub => {
+        if ((sub as any).status === 'cancelled_temporary' && !(sub as any).temporaryAutoRenew) {
+          const lastKey = `reminder_${sub.id}`;
+          const last = parseInt(localStorage.getItem(lastKey) || '0');
+          const now = Date.now();
+          if (now - last > 10 * 24 * 60 * 60 * 1000) {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('Boa Wallet', { body: `Você voltou a assinar ${sub.name}? Verifique no app.` });
+            }
+            localStorage.setItem(lastKey, now.toString());
+          }
+        }
+      });
+    };
+    const interval = setInterval(check, 60 * 60 * 1000);
+    check();
+    return () => clearInterval(interval);
+  }, [subscriptions]);
+
+  // --- Login ---
   const handleLogin = async () => {
     try {
       if (Capacitor.isNativePlatform()) {
         const result = await FirebaseAuthentication.signInWithGoogle();
         const idToken = result.credential?.idToken;
-        if (idToken) {
-          const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
-          if (error) throw error;
-        }
+        if (!idToken) throw new Error('No credential available — verifique o SHA-1 no Firebase Console e o google-services.json');
+        const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+        if (error) throw error;
       } else {
         const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' });
         if (error) throw error;
       }
     } catch (error: any) {
-      console.error("Error signing in", error);
-      alert("Sign-in failed: " + (error.message || JSON.stringify(error)));
+      alert('Login falhou: ' + (error.message || JSON.stringify(error)));
     }
   };
 
   const handleLogout = async () => {
-    try {
-      await supabase.auth.signOut();
-      setUserName('');
-    } catch (error) {
-      console.error("Error signing out", error);
-    }
+    await supabase.auth.signOut();
+    setUserName('');
   };
 
   const handleSave = async (sub: Subscription) => {
     if (user) {
-      try {
-        const isNew = !sub.createdAt || typeof sub.createdAt === 'string';
-        await supabase.from('subscriptions').upsert({
-          ...sub,
-          user_id: user.id,
-          createdAt: isNew ? new Date().toISOString() : sub.createdAt,
-          updatedAt: new Date().toISOString()
-        });
-      } catch (error) {
-        console.error("Error saving subscription:", error);
-      }
+      await supabase.from('subscriptions').upsert({
+        ...sub, user_id: user.id,
+        createdAt: sub.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
     } else {
-      if (editingSub) {
-        setSubscriptions(subs => subs.map(s => s.id === sub.id ? sub : s));
-      } else {
-        setSubscriptions(subs => [...subs, sub]);
-      }
+      setSubscriptions(subs =>
+        subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]
+      );
     }
     setIsFormOpen(false);
     setEditingSub(undefined);
   };
 
-  const handleDelete = (id: string) => {
-    setSubToDelete(id);
-  };
-
+  const handleDelete = (id: string) => setSubToDelete(id);
   const confirmDelete = async () => {
-    if (subToDelete) {
-      if (user) {
-        try {
-          await supabase.from('subscriptions').delete().eq('id', subToDelete).eq('user_id', user.id);
-        } catch (error) {
-          console.error("Error deleting subscription:", error);
-        }
-      } else {
-        setSubscriptions(subs => subs.filter(s => s.id !== subToDelete));
-      }
-      setSubToDelete(null);
-    }
+    if (!subToDelete) return;
+    if (user) await supabase.from('subscriptions').delete().eq('id', subToDelete).eq('user_id', user.id);
+    else setSubscriptions(subs => subs.filter(s => s.id !== subToDelete));
+    setSubToDelete(null);
   };
 
-  const openEdit = (sub: Subscription) => {
-    setEditingSub(sub);
-    setIsFormOpen(true);
-  };
+  const openEdit = (sub: Subscription) => { setEditingSub(sub); setIsFormOpen(true); };
+  const openNew  = () => { setEditingSub(undefined); setIsFormOpen(true); };
 
-  const openNew = () => {
-    setEditingSub(undefined);
-    setIsFormOpen(true);
-  };
-
-  // Payment Reminders
+  // Notifications
   useEffect(() => {
-    if ('Notification' in window && Notification.permission !== 'denied') {
-      Notification.requestPermission();
-    }
-
-    const checkReminders = () => {
-      const today = new Date();
-      const currentDay = today.getDate();
-
+    if ('Notification' in window && Notification.permission !== 'denied') Notification.requestPermission();
+    const check = () => {
+      const day = new Date().getDate();
       subscriptions.forEach(sub => {
-        if (sub.status === 'cancelled_temporary') {
-          const dayOfYear = Math.floor((today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 1000 / 60 / 60 / 24);
-          if (dayOfYear % 10 === 0) {
-            showNotification('Assinatura Pausada', `Você deseja reativar a assinatura ${sub.name}?`);
-          }
-        } else if (sub.status !== 'cancelled_permanent') {
-          if (sub.dueDate === currentDay) {
-            showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }));
-          } else if (sub.hasEarlyPayDiscount && sub.earlyPayDate === currentDay) {
-            showNotification(t('app.reminderTitle'), t('app.reminderBody', { service: sub.name, when: t('app.today') }) + ' (Desconto)');
-          }
-        }
+        if (sub.status && sub.status !== 'active') return;
+        if (sub.dueDate === day) new Notification?.('Boa Wallet', { body: `Pagamento hoje: ${sub.name}` });
       });
     };
+    const iv = setInterval(check, 12 * 3600 * 1000);
+    return () => clearInterval(iv);
+  }, [subscriptions]);
 
-    const interval = setInterval(checkReminders, 12 * 60 * 60 * 1000);
-    checkReminders();
-    return () => clearInterval(interval);
-  }, [subscriptions, t]);
-
-  const showNotification = (title: string, body: string) => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, { body, icon: '/logo_boa.png' });
-    }
-  };
-
+  // Export
   const exportPDF = () => {
     const doc = new jsPDF();
-    doc.text(t('app.title'), 20, 20);
+    doc.text('Boa Wallet', 20, 20);
     const data = subscriptions.map(sub => [sub.name, sub.category, formatCurrency(getEffectiveTotalCost(sub).amount, getEffectiveTotalCost(sub).currency)]);
-    autoTable(doc, {
-      head: [[t('app.name'), t('app.category'), t('app.cost')]],
-      body: data,
-      startY: 30
-    });
+    autoTable(doc, { head: [['Nome','Categoria','Custo']], body: data, startY: 30 });
     doc.save('boa-wallet-report.pdf');
   };
 
   const exportJSON = async () => {
     const data = JSON.stringify({ subscriptions, adjustments }, null, 2);
     if (Capacitor.isNativePlatform()) {
-      try {
-        const result = await Filesystem.writeFile({
-          path: 'boa-wallet-export.json',
-          data,
-          directory: Directory.Documents,
-          encoding: Encoding.UTF8
-        });
-        await Share.share({
-          title: 'Boa Wallet Export',
-          url: result.uri,
-          dialogTitle: 'Exportar JSON'
-        });
-      } catch (e) {
-        console.error('Export failed', e);
-      }
+      const result = await Filesystem.writeFile({ path: 'boa-wallet-export.json', data, directory: Directory.Documents, encoding: Encoding.UTF8 });
+      await Share.share({ title: 'Boa Wallet Export', url: result.uri });
     } else {
-      const blob = new Blob([data], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'boa-wallet-export.json';
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([data],{type:'application/json'})), download:'boa-wallet-export.json' });
       a.click();
     }
   };
 
-  const importJSON = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = JSON.parse(e.target?.result as string);
-          if (data.subscriptions) setSubscriptions(data.subscriptions);
-          if (data.adjustments) setAdjustments(data.adjustments);
-          alert(t('app.importSuccess'));
-        } catch (err) {
-          alert('Erro ao importar JSON');
-        }
-      };
-      reader.readAsText(file);
-    }
+  const importJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const d = JSON.parse(ev.target?.result as string);
+        if (d.subscriptions) setSubscriptions(d.subscriptions);
+        if (d.adjustments) setAdjustments(d.adjustments);
+        alert('Importado com sucesso!');
+      } catch { alert('Erro ao importar JSON'); }
+    };
+    reader.readAsText(file);
   };
 
+  const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
+  const disabledSubs = subscriptions.filter(s => s.status?.startsWith('cancelled'));
+
+  const TABS = [
+    { id: 'overview', label: t('app.overview') },
+    { id: 'cashflow', label: t('app.cashflow') },
+    { id: 'calendar', label: 'Calendário' },
+    { id: 'clients',  label: 'Clientes' },
+    { id: 'history',  label: 'Desativados' },
+  ] as const;
+
   return (
-    <div className={`min-h-screen transition-colors ${theme === 'dark' ? 'dark bg-[#0a0a0a]' : 'bg-[#fdfbf7]'}`}>
-      <header className="sticky top-0 z-40 w-full bg-[#fdfbf7]/80 dark:bg-[#0a0a0a]/80 backdrop-blur-md border-b border-gray-100 dark:border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={handleSecretClick}>
-            <div className="w-10 h-10 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-xl flex items-center justify-center shadow-lg transform active:scale-95 transition-transform">
-              <span className="text-white dark:text-[#0a0a0a] font-serif text-2xl">B</span>
+    <div className={`min-h-screen transition-colors font-sans ${
+      theme === 'dark' ? 'dark bg-[#0f0f0f] text-gray-100' : 'bg-[#f8f8f6] text-gray-900'
+    }`}>
+      {/* ─── HEADER ─── */}
+      <header className="sticky top-0 z-40 w-full border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-[#0f0f0f]/90 backdrop-blur-md">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
+
+          {/* Logo */}
+          <div className="flex items-center gap-2.5 cursor-pointer shrink-0" onClick={handleSecretClick}>
+            <div className="w-8 h-8 rounded-lg bg-[#5A5A40] dark:bg-[#c8c89a] flex items-center justify-center shadow">
+              <span className="text-white dark:text-[#0f0f0f] font-bold text-base leading-none">B</span>
             </div>
-            <h1 className="text-2xl font-serif font-medium tracking-tight text-gray-900 dark:text-white hidden sm:block">
-              {t('app.title')}
-            </h1>
+            <span className="font-semibold text-base text-gray-900 dark:text-white tracking-tight hidden sm:block">Boa Wallet</span>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-4">
-            <div className="flex items-center bg-gray-100 dark:bg-[#1a1a1a] rounded-full p-1 border border-gray-200 dark:border-gray-800">
+          {/* Right controls */}
+          <div className="flex items-center gap-1.5">
+
+            {/* Language selector — compact */}
+            <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-full p-0.5 gap-0.5">
               {LANG_OPTIONS.map(opt => (
                 <button
                   key={opt.code}
                   onClick={() => setLanguage(opt.code as Language)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${language === opt.code ? 'bg-white dark:bg-[#333] text-[#5A5A40] dark:text-[#d0d0a0] shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                  className={`px-2 py-1 rounded-full text-xs font-medium transition-all ${
+                    language === opt.code
+                      ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  }`}
                 >
-                  <span className="mr-1">{opt.flag}</span>
-                  {opt.label}
+                  {opt.flag}
                 </button>
               ))}
             </div>
 
+            {/* Currency selector */}
+            <div className="relative" ref={currencyRef}>
+              <button
+                onClick={() => setShowCurrencyMenu(v => !v)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                {baseCurrency}
+                <ChevronDown size={12} />
+              </button>
+              {showCurrencyMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-white dark:bg-[#1c1c1c] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-50 p-1 grid grid-cols-4 gap-0.5 w-44">
+                  {CURRENCIES.map(c => (
+                    <button
+                      key={c}
+                      onClick={() => { setBaseCurrency(c); setShowCurrencyMenu(false); }}
+                      className={`px-1.5 py-1 text-xs rounded-lg transition-colors font-medium ${
+                        baseCurrency === c
+                          ? 'bg-[#5A5A40] dark:bg-[#c8c89a] text-white dark:text-[#0f0f0f]'
+                          : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                      }`}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Theme toggle */}
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="w-8 h-8 flex items-center justify-center rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              aria-label="Toggle theme"
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+
+            {/* Auth */}
             {authLoading ? (
-              <div className="w-8 h-8 rounded-full border-2 border-[#5A5A40] border-t-transparent animate-spin"></div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {user ? (
-                  <div className="flex items-center gap-3">
-                    <div className="flex flex-col items-end hidden md:flex">
-                      <span className="text-xs font-medium text-gray-900 dark:text-white">{user.user_metadata?.full_name || userName}</span>
-                      <button onClick={handleLogout} className="text-[10px] text-gray-500 hover:text-red-500 transition-colors">Sair</button>
-                    </div>
-                    {user.user_metadata?.avatar_url ? (
-                      <img src={user.user_metadata.avatar_url} alt="Profile" className="w-9 h-9 rounded-full border border-gray-200 dark:border-gray-700 shadow-sm" />
-                    ) : (
-                      <div className="w-9 h-9 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center text-xs font-medium text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700">
-                        {userName?.charAt(0) || 'U'}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={handleLogin}
-                    className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-gray-800 rounded-full text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors shadow-sm"
-                  >
-                    <LogIn size={16} />
-                    <span className="hidden sm:inline">Entrar</span>
-                  </button>
-                )}
+              <div className="w-7 h-7 rounded-full border-2 border-[#5A5A40] border-t-transparent animate-spin" />
+            ) : user ? (
+              <div className="flex items-center gap-1.5">
+                {user.user_metadata?.avatar_url
+                  ? <img src={user.user_metadata.avatar_url} alt="Profile" className="w-7 h-7 rounded-full border border-gray-200 dark:border-gray-700" />
+                  : <div className="w-7 h-7 rounded-full bg-[#5A5A40] dark:bg-[#c8c89a] text-white dark:text-[#0f0f0f] text-xs font-bold flex items-center justify-center">{(user.user_metadata?.full_name || userName || 'U').charAt(0).toUpperCase()}</div>
+                }
+                <button onClick={handleLogout} className="hidden sm:block text-xs text-gray-400 hover:text-red-500 transition-colors">Sair</button>
               </div>
+            ) : (
+              <button
+                onClick={handleLogin}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-[#5A5A40] dark:bg-[#c8c89a] text-white dark:text-[#0f0f0f] hover:opacity-90 transition-opacity"
+              >
+                <LogIn size={13} />
+                <span>Entrar</span>
+              </button>
             )}
 
+            {/* New subscription */}
             <button
               onClick={openNew}
-              className="flex items-center gap-2 bg-[#5A5A40] hover:bg-[#4a4a34] text-white px-4 py-2.5 rounded-full text-sm font-medium transition-colors shadow-sm dark:bg-[#7a7a5c] dark:hover:bg-[#8a8a6c]"
+              className="flex items-center gap-1.5 bg-[#5A5A40] dark:bg-[#c8c89a] hover:opacity-90 text-white dark:text-[#0f0f0f] px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity shadow-sm"
             >
-              <Plus size={16} />
+              <Plus size={14} />
               <span className="hidden sm:inline">{t('app.newSubscription')}</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
-        <div className="space-y-2">
-          <h2 className="text-4xl font-serif font-medium text-gray-900 dark:text-white">
-            {getGreeting()}
-          </h2>
-          <p className="text-gray-500 dark:text-gray-400 text-lg">
-            {t('app.summary')}
-          </p>
+      {/* ─── MAIN ─── */}
+      <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
+
+        {/* Greeting */}
+        <div>
+          <h2 className="text-3xl font-semibold text-gray-900 dark:text-white">{getGreeting()}</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{t('app.summary')}</p>
         </div>
 
-        <div className="flex items-center gap-6 border-b border-gray-200 dark:border-gray-800">
-          <button
-            onClick={() => setActiveTab('overview')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${
-              activeTab === 'overview'
-                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
-                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
-            }`}
-          >
-            {t('app.overview')}
-            {activeTab === 'overview' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
-          </button>
-          <button
-            onClick={() => setActiveTab('cashflow')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${
-              activeTab === 'cashflow'
-                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
-                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
-            }`}
-          >
-            {t('app.cashflow')}
-            {activeTab === 'cashflow' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
-          </button>
-          <button
-            onClick={() => setActiveTab('calendar')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${
-              activeTab === 'calendar'
-                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
-                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
-            }`}
-          >
-            Calendário
-            {activeTab === 'calendar' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
-          </button>
-          <button
-            onClick={() => setActiveTab('history')}
-            className={`pb-3 text-sm font-medium transition-colors relative ${
-              activeTab === 'history'
-                ? 'text-[#5A5A40] dark:text-[#d0d0a0]'
-                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
-            }`}
-          >
-            {t('app.disabledPayments') || 'Desativados'}
-            {activeTab === 'history' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#5A5A40] dark:bg-[#d0d0a0] rounded-t-full"></div>}
-          </button>
+        {/* Tabs */}
+        <div className="flex items-center gap-5 border-b border-gray-200 dark:border-gray-800 overflow-x-auto scrollbar-hide">
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`whitespace-nowrap pb-3 text-sm font-medium transition-colors relative ${
+                activeTab === tab.id
+                  ? 'text-[#5A5A40] dark:text-[#c8c89a]'
+                  : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+              }`}
+            >
+              {tab.label}
+              {activeTab === tab.id && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#5A5A40] dark:bg-[#c8c89a] rounded-t-full" />
+              )}
+            </button>
+          ))}
         </div>
 
+        {/* Tab content */}
         {activeTab === 'overview' && (
           <>
             <Dashboard
-              subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))}
+              subscriptions={activeSubs}
               baseCurrency={baseCurrency}
               exchangeRates={exchangeRates}
               adjustments={adjustments}
               onAddAdjustment={handleAddAdjustment}
               onRemoveAdjustment={handleRemoveAdjustment}
             />
+            <SubscriptionList
+              subscriptions={activeSubs}
+              baseCurrency={baseCurrency}
+              exchangeRates={exchangeRates}
+              onEdit={openEdit}
+              onDelete={handleDelete}
+              onToggleStatus={handleToggleStatus}
+            />
+          </>
+        )}
 
-            <div className="grid grid-cols-1 gap-8">
-              <div className="col-span-1">
+        {activeTab === 'cashflow' && (
+          <Cashflow subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+        )}
+
+        {activeTab === 'calendar' && (
+          <CalendarView subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} />
+        )}
+
+        {activeTab === 'clients' && (
+          <ClientsTab subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
+        )}
+
+        {activeTab === 'history' && (
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Assinaturas Desativadas</h2>
+            {disabledSubs.length === 0 ? (
+              <div className="text-center py-16 text-gray-400">
+                <p className="text-4xl mb-3">✅</p>
+                <p className="text-sm">Nenhuma assinatura desativada.</p>
+              </div>
+            ) : (
+              <div className="opacity-70">
                 <SubscriptionList
-                  subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))}
+                  subscriptions={disabledSubs}
                   baseCurrency={baseCurrency}
                   exchangeRates={exchangeRates}
                   onEdit={openEdit}
@@ -556,149 +528,90 @@ export default function App() {
                   onToggleStatus={handleToggleStatus}
                 />
               </div>
-            </div>
-          </>
-        )}
-
-        {activeTab === 'cashflow' && (
-          <Cashflow subscriptions={subscriptions.filter(s => !s.status?.startsWith('cancelled'))} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />
-        )}
-
-        {activeTab === 'calendar' && (
-          <CalendarView 
-             subscriptions={subscriptions} 
-             baseCurrency={baseCurrency} 
-             exchangeRates={exchangeRates} 
-             onEdit={openEdit} 
-          />
-        )}
-
-        {activeTab === 'history' && (
-          <div className="grid grid-cols-1 gap-8">
-            <div className="col-span-1 opacity-60">
-              <h2 className="text-xl font-medium text-gray-900 dark:text-white mb-4">{t('app.disabledPayments') || 'Pagamentos Desativados'}</h2>
-              <SubscriptionList
-                subscriptions={subscriptions.filter(s => s.status?.startsWith('cancelled'))}
-                baseCurrency={baseCurrency}
-                exchangeRates={exchangeRates}
-                onEdit={openEdit}
-                onDelete={handleDelete}
-                onToggleStatus={handleToggleStatus}
-              />
-            </div>
+            )}
           </div>
         )}
       </main>
 
+      {/* Modals */}
       {!userName && !user && !authLoading && <WelcomeModal onSave={setUserName} />}
 
       {isFormOpen && (
         <SubscriptionForm
           subscription={editingSub}
           onSave={handleSave}
-          onClose={() => {
-            setIsFormOpen(false);
-            setEditingSub(undefined);
-          }}
+          onClose={() => { setIsFormOpen(false); setEditingSub(undefined); }}
         />
       )}
 
-      {/* Secret Menu Modal */}
-      {showSecretMenu && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-serif font-medium text-gray-900 dark:text-white">
-                {t('app.secretMenu')}
-              </h3>
-              <button onClick={() => setShowSecretMenu(false)} className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-                &times;
-              </button>
+      {/* Disable prompt - step 1: permanent or temporary? */}
+      {disablePromptSub && disableType === null && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Desabilitar Assinatura</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              <strong>{disablePromptSub.name}</strong> — é uma pausa temporária ou cancelamento permanente?
+            </p>
+            <div className="space-y-2">
+              <button onClick={confirmDisableTemporary} className="w-full py-3 text-sm font-medium text-white bg-orange-500 hover:bg-orange-600 rounded-xl transition-colors">⏸ Pausa Temporária</button>
+              <button onClick={confirmDisablePermanent} className="w-full py-3 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors">❌ Cancelamento Permanente</button>
+              <button onClick={() => setDisablePromptSub(null)} className="w-full py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Voltar</button>
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="space-y-3">
-              <button
-                onClick={exportJSON}
-                className="w-full flex items-center gap-3 px-4 py-3 bg-[#fdfbf7] dark:bg-[#2a2a2a] hover:bg-gray-100 dark:hover:bg-[#333] rounded-xl transition-colors text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                <Download size={18} className="text-[#5A5A40] dark:text-[#d0d0a0]" />
-                {t('app.exportJson')}
+      {/* Disable prompt - step 2 (temporary): auto-renew? */}
+      {disablePromptSub && disableType === 'temporary' && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Pausa Temporária</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Pretende renovar <strong>{disablePromptSub.name}</strong> no mesmo dia do próximo mês?
+            </p>
+            <div className="space-y-2">
+              <button onClick={() => confirmTemporaryWithRenew(true)} className="w-full py-3 text-sm font-medium text-white bg-[#5A5A40] dark:bg-[#c8c89a] dark:text-[#0f0f0f] rounded-xl transition-colors hover:opacity-90">✅ Sim, renovar automaticamente</button>
+              <button onClick={() => confirmTemporaryWithRenew(false)} className="w-full py-3 text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 rounded-xl transition-colors hover:bg-gray-200 dark:hover:bg-gray-700">🔔 Não, me lembrar a cada 10 dias</button>
+              <button onClick={() => setDisableType(null)} className="w-full py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">← Voltar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {subToDelete && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
+            <div className="w-14 h-14 bg-red-100 dark:bg-red-900/30 text-red-600 rounded-full flex items-center justify-center mx-auto mb-3">
+              <AlertTriangle size={28} />
+            </div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">{t('app.confirmDelete')}</h3>
+            <div className="flex justify-center gap-3 mt-5">
+              <button onClick={() => setSubToDelete(null)} className="px-5 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 rounded-full">{t('app.cancel')}</button>
+              <button onClick={confirmDelete} className="px-5 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-full">{t('app.delete')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Secret menu */}
+      {showSecretMenu && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6">
+            <div className="flex justify-between items-center mb-5">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-white">⚙️ Menu Secreto</h3>
+              <button onClick={() => setShowSecretMenu(false)} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+            <div className="space-y-2">
+              <button onClick={exportJSON} className="w-full flex items-center gap-3 px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300">
+                <Download size={16} className="text-[#5A5A40] dark:text-[#c8c89a]" /> Exportar JSON
               </button>
-
-              <label className="w-full flex items-center gap-3 px-4 py-3 bg-[#fdfbf7] dark:bg-[#2a2a2a] hover:bg-gray-100 dark:hover:bg-[#333] rounded-xl transition-colors text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
-                <Upload size={18} className="text-[#5A5A40] dark:text-[#d0d0a0]" />
-                {t('app.importJson')}
+              <label className="w-full flex items-center gap-3 px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
+                <Upload size={16} className="text-[#5A5A40] dark:text-[#c8c89a]" /> Importar JSON
                 <input type="file" accept=".json" className="hidden" onChange={importJSON} />
               </label>
-
-              <button
-                onClick={exportPDF}
-                className="w-full flex items-center gap-3 px-4 py-3 bg-[#fdfbf7] dark:bg-[#2a2a2a] hover:bg-gray-100 dark:hover:bg-[#333] rounded-xl transition-colors text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                <FileText size={18} className="text-red-500" />
-                {t('app.exportPdf')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Disable Prompt Modal */}
-      {disablePromptSub && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-              Desabilitar Assinatura
-            </h3>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-              Esta é uma pausa temporária (onde você pode querer reativar depois e receber lembretes) ou um cancelamento permanente?
-            </p>
-            <div className="flex flex-col gap-3">
-              <button
-                onClick={() => confirmDisable('cancelled_temporary')}
-                className="px-6 py-3 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 rounded-xl transition-colors shadow-sm"
-              >
-                Pausa Temporária
-              </button>
-              <button
-                onClick={() => confirmDisable('cancelled_permanent')}
-                className="px-6 py-3 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors shadow-sm"
-              >
-                Cancelamento Permanente
-              </button>
-              <button
-                onClick={() => setDisablePromptSub(null)}
-                className="px-6 py-2.5 mt-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
-              >
-                Voltar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {subToDelete && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
-            <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full flex items-center justify-center mx-auto mb-4">
-              <AlertTriangle size={32} />
-            </div>
-            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-              {t('app.confirmDelete')}
-            </h3>
-            <div className="flex justify-center gap-3 mt-6">
-              <button
-                onClick={() => setSubToDelete(null)}
-                className="px-6 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-[#fdfbf7] dark:bg-[#121212] hover:bg-gray-200 dark:hover:bg-gray-800 rounded-full transition-colors"
-              >
-                {t('app.cancel')}
-              </button>
-              <button
-                onClick={confirmDelete}
-                className="px-6 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-full transition-colors shadow-sm dark:shadow-none"
-              >
-                {t('app.delete')}
+              <button onClick={exportPDF} className="w-full flex items-center gap-3 px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300">
+                <FileText size={16} className="text-red-500" /> Exportar PDF
               </button>
             </div>
           </div>

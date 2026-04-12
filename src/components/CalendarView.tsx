@@ -1,146 +1,136 @@
-import React from 'react';
-import { Subscription, getEffectiveTotalCost, Currency } from '../types';
+import React, { useMemo } from 'react';
+import { Subscription, Currency, convertCurrency, getMonthlyAmount, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useAppContext } from '../AppContext';
 
-interface CalendarViewProps {
+interface Props {
   subscriptions: Subscription[];
   baseCurrency: Currency;
   exchangeRates: Record<Currency, number>;
   onEdit: (sub: Subscription) => void;
 }
 
-export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdit }: CalendarViewProps) {
-  const { language } = useAppContext();
-  const [currentDate, setCurrentDate] = React.useState(new Date());
+const MONTHS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
-  const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
-  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
-
-  const prevMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
-  };
-
-  const nextMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
-  };
-
+export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdit }: Props) {
   const today = new Date();
-  const isCurrentMonth = today.getMonth() === currentDate.getMonth() && today.getFullYear() === currentDate.getFullYear();
-  const currentDay = today.getDate();
 
-  const monthNamesPt = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-  const monthNamesEn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const monthNames = language === 'pt' ? monthNamesPt : monthNamesEn;
-
-  const daysPt = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-  const daysEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const days = language === 'pt' ? daysPt : daysEn;
-
-  // Map subscriptions to days
-  const getDailySubs = (day: number) => {
-    return subscriptions.filter(sub => {
-      // Exclude completely flexible or random single expenses without due date
-      if (sub.isFlexibleDate || typeof sub.dueDate !== 'number' || sub.status?.startsWith('cancelled')) return false;
-
-      // Handle due date overflowing the month length (e.g., due 31 but month has 28 days)
-      const effectiveDueDate = sub.dueDate > daysInMonth ? daysInMonth : sub.dueDate;
-      return effectiveDueDate === day;
+  // Build a map: day -> subscriptions due
+  const byDay = useMemo(() => {
+    const map: Record<number, Subscription[]> = {};
+    subscriptions.forEach(sub => {
+      if (sub.status?.startsWith('cancelled')) return;
+      const day = sub.dueDate;
+      if (!day) return;
+      if (!map[day]) map[day] = [];
+      map[day].push(sub);
     });
-  };
+    return map;
+  }, [subscriptions]);
 
-  const daysArray = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-  const paddingArray = Array.from({ length: firstDayOfMonth }, (_, i) => i);
+  // Days with events, sorted
+  const days = Object.keys(byDay).map(Number).sort((a, b) => a - b);
+
+  // Total per day
+  const totalForDay = (subs: Subscription[]) =>
+    subs.reduce((acc, sub) => {
+      const eff = getEffectiveTotalCost(sub);
+      return acc + convertCurrency(getMonthlyAmount(eff.amount, sub.billingCycle), eff.currency, baseCurrency, exchangeRates);
+    }, 0);
+
+  const currentMonth = MONTHS[today.getMonth()];
+  const currentYear = today.getFullYear();
 
   return (
-    <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl border border-gray-200 dark:border-gray-800 p-6 shadow-sm font-sans mb-8">
-      {/* Calendar Header */}
-      <div className="flex items-center justify-between mb-8">
-        <h2 className="text-2xl font-medium text-gray-900 dark:text-white flex items-center gap-3">
-          <Calendar className="text-blue-600 dark:text-blue-400" />
-          {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+          📅 {currentMonth} {currentYear}
         </h2>
-        <div className="flex items-center gap-2">
-          <button onClick={prevMonth} className="p-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#222] dark:hover:bg-[#333] rounded-full transition-colors text-gray-700 dark:text-gray-300">
-            <ChevronLeft size={20} />
-          </button>
-          <button onClick={() => setCurrentDate(new Date())} className="px-4 py-2 text-sm font-medium bg-gray-100 hover:bg-gray-200 dark:bg-[#222] dark:hover:bg-[#333] rounded-full transition-colors text-gray-700 dark:text-gray-300">
-            {language === 'pt' ? 'Hoje' : 'Today'}
-          </button>
-          <button onClick={nextMonth} className="p-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#222] dark:hover:bg-[#333] rounded-full transition-colors text-gray-700 dark:text-gray-300">
-            <ChevronRight size={20} />
-          </button>
+        <span className="text-xs text-gray-400 dark:text-gray-500">· vencimentos do mês</span>
+      </div>
+
+      {days.length === 0 ? (
+        <div className="text-center py-16 text-gray-400">
+          <p className="text-4xl mb-3">📭</p>
+          <p className="text-sm">Nenhum vencimento este mês.</p>
         </div>
-      </div>
+      ) : (
+        <div className="space-y-2">
+          {days.map(day => {
+            const subs = byDay[day];
+            const total = totalForDay(subs);
+            const isPast = day < today.getDate();
+            const isToday = day === today.getDate();
 
-      {/* Calendar Grid */}
-      <div className="grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-inner">
-        {/* Day Names */}
-        {days.map(day => (
-          <div key={day} className="bg-gray-50 dark:bg-[#222] text-center py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-            {day}
-          </div>
-        ))}
-
-        {/* Padding Days */}
-        {paddingArray.map(i => (
-          <div key={`pad-${i}`} className="bg-white dark:bg-[#1a1a1a] min-h-[100px] p-2" />
-        ))}
-
-        {/* Actual Days */}
-        {daysArray.map(day => {
-          const dailySubs = getDailySubs(day);
-          const isToday = isCurrentMonth && day === currentDay;
-
-          return (
-            <div
-              key={day}
-              className={`min-h-[100px] p-2 bg-white dark:bg-[#1a1a1a] transition-all hover:bg-gray-50 dark:hover:bg-[#222] ${isToday ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/10 dark:bg-blue-900/10' : ''}`}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className={`text-sm font-medium ${isToday ? 'bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center' : 'text-gray-700 dark:text-gray-300'}`}>
-                  {day}
-                </span>
-                {dailySubs.length > 0 && (
-                  <span className="text-[10px] font-medium text-gray-500 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
-                    {dailySubs.length}
-                  </span>
-                )}
-              </div>
-              <div className="space-y-1.5 overflow-y-auto max-h-[120px] pr-1 styled-scrollbar">
-                {dailySubs.map(sub => {
-                  const costInfo = getEffectiveTotalCost(sub);
-                  return (
-                    <div
-                      key={sub.id}
-                      onClick={() => onEdit(sub)}
-                      className="cursor-pointer flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-[#fdfbf7] dark:bg-[#252525] hover:bg-gray-100 dark:hover:bg-[#333] border border-gray-100 dark:border-gray-800 transition-colors"
-                      title={`${sub.name} - ${formatCurrency(costInfo.amount, costInfo.currency)}`}
-                    >
-                      <div className="w-5 h-5 rounded-full bg-white dark:bg-[#121212] flex items-center justify-center text-[10px] overflow-hidden shrink-0 shadow-sm border border-gray-100 dark:border-gray-800">
-                         {sub.logoUrl ? (
-                           <img src={sub.logoUrl} alt={sub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                         ) : (
-                           sub.emoji
-                         )}
-                      </div>
-                      <div className="flex flex-col min-w-0">
-                         <span className="text-[11px] font-medium text-gray-900 dark:text-white truncate" style={{ maxWidth: '60px' }}>
-                           {sub.name}
-                         </span>
-                         <span className="text-[9px] text-gray-500 dark:text-gray-400">
-                           {formatCurrency(costInfo.amount, costInfo.currency)}
-                         </span>
-                      </div>
+            return (
+              <div
+                key={day}
+                className={`rounded-2xl border transition-colors ${
+                  isToday
+                    ? 'border-[#5A5A40] dark:border-[#c8c89a] bg-[#5A5A40]/5 dark:bg-[#c8c89a]/5'
+                    : 'border-gray-100 dark:border-gray-800 bg-white dark:bg-[#1a1a1a]'
+                }`}
+              >
+                {/* Day header */}
+                <div className="px-4 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-xl flex flex-col items-center justify-center text-xs font-bold ${
+                      isToday
+                        ? 'bg-[#5A5A40] dark:bg-[#c8c89a] text-white dark:text-[#0f0f0f]'
+                        : isPast
+                        ? 'bg-gray-100 dark:bg-gray-800 text-gray-400'
+                        : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-200'
+                    }`}>
+                      <span>{day}</span>
+                      <span className="text-[8px] font-normal opacity-70">{currentMonth}</span>
                     </div>
-                  );
-                })}
+                    <div>
+                      <p className={`text-sm font-medium ${
+                        isToday ? 'text-[#5A5A40] dark:text-[#c8c89a]' : isPast ? 'text-gray-400' : 'text-gray-900 dark:text-white'
+                      }`}>
+                        {isToday ? 'Hoje' : isPast ? `Dia ${day} (passado)` : `Dia ${day}`}
+                      </p>
+                      <p className="text-xs text-gray-400 dark:text-gray-500">
+                        {subs.length} assinatura{subs.length !== 1 ? 's' : ''} · {formatCurrency(total, baseCurrency)}
+                      </p>
+                    </div>
+                  </div>
+                  {isToday && (
+                    <span className="text-xs bg-[#5A5A40] dark:bg-[#c8c89a] text-white dark:text-[#0f0f0f] px-2 py-0.5 rounded-full font-medium">Hoje</span>
+                  )}
+                </div>
+
+                {/* Sub list */}
+                <div className="divide-y divide-gray-50 dark:divide-gray-800">
+                  {subs.map(sub => {
+                    const eff = getEffectiveTotalCost(sub);
+                    return (
+                      <button
+                        key={sub.id}
+                        onClick={() => onEdit(sub)}
+                        className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left"
+                      >
+                        <span className="text-lg">{sub.emoji}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm font-medium truncate ${
+                            isPast ? 'text-gray-400' : 'text-gray-900 dark:text-white'
+                          }`}>{sub.name}</p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500">{sub.category}</p>
+                        </div>
+                        <p className={`text-sm font-semibold shrink-0 ${
+                          isPast ? 'text-gray-400' : 'text-gray-900 dark:text-white'
+                        }`}>
+                          {formatCurrency(convertCurrency(getMonthlyAmount(eff.amount, sub.billingCycle), eff.currency, baseCurrency, exchangeRates), baseCurrency)}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
