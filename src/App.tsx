@@ -371,7 +371,7 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       doc.setFontSize(20);
-      doc.text('Boa Wallet - Relatório v1.5.0', pageWidth / 2, 20, { align: 'center' });
+      doc.text('Boa Wallet - Relatório v1.6.0', pageWidth / 2, 20, { align: 'center' });
       
       const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
       const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
