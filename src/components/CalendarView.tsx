@@ -23,20 +23,34 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
   const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
 
-  // Build events map: day -> subscriptions
+  // Build events map: day -> { type: 'sub' | 'client', sub: Subscription, client?: SharedMember }
   const eventsMap = useMemo(() => {
-    const map: Record<number, Subscription[]> = {};
+    const map: Record<number, Array<{ type: 'sub' | 'client', sub: Subscription, client?: any }>> = {};
     subscriptions.forEach(sub => {
-      if (sub.isFlexibleDate || typeof sub.dueDate !== 'number' || sub.status?.startsWith('cancelled_permanent')) return;
-      
-      // Yearly sub check
-      if (sub.billingCycle === 'Yearly' && sub.dueMonth) {
-        if (sub.dueMonth !== (currentDate.getMonth() + 1)) return;
+      // Main subscription
+      if (!sub.isFlexibleDate && typeof sub.dueDate === 'number' && !sub.status?.startsWith('cancelled_permanent')) {
+        let shouldAdd = true;
+        if (sub.billingCycle === 'Yearly' && sub.dueMonth) {
+          if (sub.dueMonth !== (currentDate.getMonth() + 1)) shouldAdd = false;
+        }
+        
+        if (shouldAdd) {
+          const day = sub.dueDate > daysInMonth ? daysInMonth : sub.dueDate;
+          if (!map[day]) map[day] = [];
+          map[day].push({ type: 'sub', sub });
+        }
       }
-      
-      const day = sub.dueDate > daysInMonth ? daysInMonth : sub.dueDate;
-      if (!map[day]) map[day] = [];
-      map[day].push(sub);
+
+      // Shared Members
+      if (sub.sharedWith && sub.sharedWith.length > 0 && !sub.status?.startsWith('cancelled_permanent')) {
+        sub.sharedWith.forEach(member => {
+          if (member.paymentDate && typeof member.paymentDate === 'number') {
+            const day = member.paymentDate > daysInMonth ? daysInMonth : member.paymentDate;
+            if (!map[day]) map[day] = [];
+            map[day].push({ type: 'client', sub, client: member });
+          }
+        });
+      }
     });
     return map;
   }, [subscriptions, currentDate, daysInMonth]);
@@ -112,30 +126,57 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
                 </div>
 
                 <div className="divide-y divide-gray-800/50">
-                  {subs.map(sub => {
-                    const cost = getEffectiveTotalCost(sub);
-                    const isPaused = sub.status === 'cancelled_temporary';
+                  {subs.map((event, idx) => {
+                    const isPaused = event.sub.status === 'cancelled_temporary';
                     
-                    return (
-                      <div key={sub.id} onClick={() => onEdit(sub)} className={`px-5 py-3 hover:bg-white/5 cursor-pointer transition-colors flex items-center justify-between ${isPaused ? 'opacity-50' : ''}`}>
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-xl overflow-hidden border border-gray-700">
-                             {sub.logoUrl ? <img src={sub.logoUrl} className="w-full h-full object-cover" alt="" /> : <span>{sub.emoji}</span>}
+                    if (event.type === 'client' && event.client) {
+                      const { sub, client } = event;
+                      return (
+                        <div key={`client-${client.id}-${idx}`} onClick={() => onEdit(sub)} className={`px-5 py-3 hover:bg-white/5 cursor-pointer transition-colors flex items-center justify-between ${isPaused ? 'opacity-50' : ''}`}>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-xl overflow-hidden border border-gray-700">
+                               <span className="text-gray-400">👤</span>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-white flex items-center gap-2">
+                                {client.name}
+                                {client.paidCurrentMonth && <span className="text-[9px] bg-emerald-950 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-900/50">PAGO</span>}
+                              </p>
+                              <p className="text-xs text-emerald-500">
+                                {language === 'pt' ? 'Pagamento ref.' : 'Payment for'} {sub.name}
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-semibold text-white flex items-center gap-2">
-                              {sub.name}
-                              {isPaused && <span className="text-[9px] bg-orange-950 text-orange-400 px-1.5 py-0.5 rounded border border-orange-900/50">PAUSADO</span>}
-                            </p>
-                            <p className="text-xs text-gray-500">{sub.category}</p>
+                          <div className="text-right">
+                            <p className={`text-sm font-bold ${client.paidCurrentMonth ? 'text-gray-500' : 'text-white'}`}>{formatCurrency(client.amount, client.currency || sub.costCurrency)}</p>
+                            <p className="text-[10px] text-emerald-500 uppercase font-bold">{language === 'pt' ? 'Recebimento' : 'Income'}</p>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-sm font-bold text-white">{formatCurrency(cost.amount, cost.currency)}</p>
-                          <p className="text-[10px] text-gray-500">{sub.paymentSource || 'Assinatura'}</p>
+                      );
+                    } else {
+                      const { sub } = event;
+                      const cost = getEffectiveTotalCost(sub);
+                      return (
+                        <div key={`sub-${sub.id}-${idx}`} onClick={() => onEdit(sub)} className={`px-5 py-3 hover:bg-white/5 cursor-pointer transition-colors flex items-center justify-between ${isPaused ? 'opacity-50' : ''}`}>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-xl overflow-hidden border border-gray-700">
+                               {sub.logoUrl ? <img src={sub.logoUrl} className="w-full h-full object-cover" alt="" /> : <span>{sub.emoji}</span>}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-white flex items-center gap-2">
+                                {sub.name}
+                                {isPaused && <span className="text-[9px] bg-orange-950 text-orange-400 px-1.5 py-0.5 rounded border border-orange-900/50">PAUSADO</span>}
+                              </p>
+                              <p className="text-xs text-gray-500">{sub.category}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-bold text-red-400">-{formatCurrency(cost.amount, cost.currency)}</p>
+                            <p className="text-[10px] text-gray-500">{sub.paymentSource || 'Assinatura'}</p>
+                          </div>
                         </div>
-                      </div>
-                    );
+                      );
+                    }
                   })}
                 </div>
               </div>

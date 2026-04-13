@@ -638,9 +638,12 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                           }}
                           className="relative"
                         >
-                          {/* Background Delete Indicator */}
-                          <div className="absolute inset-0 bg-red-500/20 rounded-xl flex items-center justify-end pr-4 -z-10">
-                            <Trash2 size={20} className="text-red-500" />
+                          {/* Background Delete Indicator - Revealed on swipe */}
+                          <div className="absolute inset-0 bg-red-500 rounded-xl flex items-center justify-end pr-6 -z-10">
+                            <div className="flex flex-col items-center gap-1">
+                              <Trash2 size={24} className="text-white" />
+                              <span className="text-[10px] text-white font-bold uppercase">{language === 'pt' ? 'Remover' : 'Remove'}</span>
+                            </div>
                           </div>
 
                           <div className="bg-[#1a1a1a] p-3 rounded-xl border border-gray-800 shadow-sm space-y-3 touch-pan-y">
@@ -651,9 +654,9 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                                 placeholder={t('form.memberName' as any)} 
                                 value={member.name} 
                                 onChange={e => updateSharedMember(member.id, 'name', e.target.value)} 
-                                className="flex-1 bg-transparent text-sm font-medium border-0 focus:ring-0 text-white placeholder:text-gray-600" 
+                                className="flex-1 bg-transparent text-sm font-medium border-0 focus:ring-0 text-white placeholder:text-gray-600 min-w-0" 
                               />
-                              <div className="flex items-center gap-1 bg-[#222] px-2 py-1 rounded-lg">
+                              <div className="flex items-center gap-1 bg-[#222] px-2 py-1 rounded-lg shrink-0">
                                 <span className="text-[10px] text-gray-500 uppercase">Dia</span>
                                 <input 
                                   type="number" 
@@ -661,7 +664,7 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                                   max="31" 
                                   value={member.paymentDate} 
                                   onChange={e => updateSharedMember(member.id, 'paymentDate', parseInt(e.target.value) || 1)} 
-                                  className="w-8 bg-transparent text-center text-xs text-white border-0 focus:ring-0 p-0" 
+                                  className="w-7 bg-transparent text-center text-xs text-white border-0 focus:ring-0 p-0" 
                                 />
                               </div>
                               <button 
@@ -670,6 +673,14 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                                 className={`p-1.5 rounded-lg transition-colors ${member.paidCurrentMonth ? 'text-emerald-500 bg-emerald-900/20' : 'text-gray-600 bg-gray-800/40 hover:bg-gray-800'}`}
                               >
                                 <CheckCircle2 size={18} />
+                              </button>
+                              <button 
+                                type="button" 
+                                onClick={() => removeSharedMember(member.id)} 
+                                className="p-1.5 text-gray-400 hover:text-red-500 sm:hidden"
+                                title="Remover"
+                              >
+                                <Trash2 size={18} />
                               </button>
                             </div>
 
@@ -698,11 +709,11 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                                   {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                                 </select>
                               </div>
-                              <div className="flex items-center gap-2 bg-[#121212] px-3 py-2 rounded-lg border border-gray-800/50">
+                              <div className="flex items-center gap-2 bg-[#121212] px-3 py-2 rounded-lg border border-gray-800 group-focus-within:border-[#5A5A40] transition-colors">
                                 <Info size={14} className="text-gray-500" />
                                 <input 
                                   type="text" 
-                                  placeholder={language === 'pt' ? 'Ex: Telegram' : 'Ex: Telegram'} 
+                                  placeholder={language === 'pt' ? 'Descrição (ex: Telegram)' : 'Info (ex: Telegram)'} 
                                   value={member.info || ''} 
                                   onChange={e => updateSharedMember(member.id, 'info', e.target.value)} 
                                   className="w-full bg-transparent text-xs border-0 focus:ring-0 text-white p-0" 
@@ -710,25 +721,22 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                               </div>
                             </div>
                             
-                            <p className="text-[10px] text-gray-600 text-right italic pt-1">{language === 'pt' ? 'Arraste para a esquerda para remover' : 'Swipe left to remove'}</p>
+                            <div className="flex justify-between items-center px-1">
+                              <span className="text-[9px] text-gray-600 italic">{language === 'pt' ? 'Arraste para remover' : 'Swipe to remove'}</span>
+                              {member.amount > 0 && (
+                                <span className="text-[10px] text-emerald-500 font-bold">
+                                  {member.currency} {member.amount.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </motion.div>
                       ))}
                     </AnimatePresence>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-gray-700">
+                  <div className="mt-3 pt-3 border-t border-gray-700">
                     <div className="space-y-1">
-                      <label className={labelClass}>{t('form.incomeAmount')} (Total)</label>
-                      <input type="number" step="0.01" value={incomeAmountStr} onFocus={handleFocus} onChange={e => setIncomeAmountStr(e.target.value)} className={inputClass} />
-                    </div>
-                    <div className="space-y-1">
-                      <label className={labelClass}>{t('form.currency')}</label>
-                      <select name="incomeCurrency" value={formData.incomeCurrency} onChange={handleChange} className={inputClass}>
-                        {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-                    <div className="space-y-1 col-span-2">
                       <label className={labelClass}>{t('form.incomeDesc')}</label>
                       <input type="text" name="incomeSourceDescription" value={formData.incomeSourceDescription} onChange={handleChange} className={inputClass} />
                     </div>

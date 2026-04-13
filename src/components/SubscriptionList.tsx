@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown, Power, Users as UsersIcon } from 'lucide-react';
+import { Edit2, Trash2, X, TrendingUp, TrendingDown, Power, Users as UsersIcon } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 
@@ -21,36 +21,6 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
 
   // Sort by due date
   const sortedSubs = [...subscriptions].sort((a, b) => a.dueDate - b.dueDate);
-
-  const generateICS = (sub: Subscription) => {
-    const now = new Date();
-    const dueDate = new Date(now.getFullYear(), now.getMonth(), sub.dueDate);
-    if (dueDate < now) {
-      dueDate.setMonth(dueDate.getMonth() + 1);
-    }
-
-    const start = dueDate.toISOString().replace(/-|:|\.\d+/g, '');
-    const end = new Date(dueDate.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
-
-    const icsContent = `BEGIN:VCALENDAR
-VERSION:2.0
-BEGIN:VEVENT
-DTSTART:${start}
-DTEND:${end}
-SUMMARY:Payment: ${sub.name}
-DESCRIPTION:Payment reminder for ${sub.name} (${formatCurrency(getEffectiveTotalCost(sub).amount, getEffectiveTotalCost(sub).currency)}).\\n\\n${sub.notes ? `Notes: ${sub.notes}\\n` : ''}${sub.isPromotional ? `Promotional Value: ${sub.originalCost ? formatCurrency(sub.originalCost, sub.costCurrency) : 'Yes'}\\n` : ''}
-RRULE:FREQ=${sub.billingCycle === 'Monthly' ? 'MONTHLY' : 'YEARLY'}
-END:VEVENT
-END:VCALENDAR`;
-
-    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-    const link = document.createElement('a');
-    link.href = window.URL.createObjectURL(blob);
-    link.setAttribute('download', `${sub.name.replace(/\s+/g, '_')}_reminder.ics`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   return (
     <div className="bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 overflow-hidden transition-colors">
@@ -236,13 +206,6 @@ END:VCALENDAR`;
                             <Power size={16} />
                           </button>
                         )}
-                        <button
-                          onClick={() => generateICS(sub)}
-                          title={t('app.addToCalendar')}
-                          className="p-2 text-gray-400 hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-900/30"
-                        >
-                          <CalendarPlus size={16} />
-                        </button>
                         <button
                           onClick={() => onEdit(sub)}
                           className="p-2 text-gray-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-900/30"
@@ -432,13 +395,6 @@ END:VCALENDAR`;
                   <span className="text-xs font-medium">{selectedSub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}</span>
                 </button>
               )}
-              <button
-                onClick={() => { generateICS(selectedSub); setSelectedSub(null); }}
-                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-emerald-400 hover:bg-[#2a2a2a] transition-colors"
-              >
-                <CalendarPlus size={24} />
-                <span className="text-xs font-medium">{t('list.reminder' as any)}</span>
-              </button>
               <button
                 onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"

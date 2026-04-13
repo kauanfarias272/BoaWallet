@@ -12,12 +12,12 @@ import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
 import { db } from './firebase';
-import { collection, query, where, getDocs, setDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatCurrency } from './lib/utils';
 
@@ -171,44 +171,72 @@ export default function App() {
     }
 
     const fetchInitialData = async () => {
-      console.log('[BoaWallet] Syncing data...');
+      if (!user) return;
+      console.log('[BoaWallet] Syncing data from cloud...');
       
-      const { data: subs, error: subsError } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
-      
-      if (subs && subs.length > 0) {
-        setSubscriptions(subs as any[]);
-        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subs));
-      } else if (!subsError) {
-        // Try Firebase Migration
-        try {
-          const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
-          const querySnapshot = await getDocs(q);
-          const fireSubs: any[] = [];
-          querySnapshot.forEach((doc) => { fireSubs.push({ ...doc.data(), id: doc.id }); });
+      try {
+        // 1. Fetch from Supabase (Primary)
+        const { data: subs, error: subsError } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
+        
+        if (subs && subs.length > 0) {
+          console.log('[BoaWallet] Found Supabase match:', subs.length);
           
-          if (fireSubs.length > 0) {
-            setSubscriptions(fireSubs);
-            for (const sub of fireSubs) { await supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }); }
-          } else {
-            const cachedSubs = localStorage.getItem('subscriptions_' + user.id);
-            if (cachedSubs) {
-              const parsed = JSON.parse(cachedSubs);
-              if (Array.isArray(parsed)) setSubscriptions(parsed);
-            }
-          }
-        } catch (err) { console.error('Firebase pull failed', err); }
-      }
+          // Merge local subscriptions that might have been created while logged out
+          try {
+             const localSubsRaw = localStorage.getItem('subscriptions');
+             if (localSubsRaw) {
+               const localSubs = JSON.parse(localSubsRaw);
+               if (Array.isArray(localSubs) && localSubs.length > 0) {
+                 const newSubs = localSubs.filter(ls => !subs.some(s => s.id === ls.id));
+                 if (newSubs.length > 0) {
+                    console.log('[BoaWallet] Merging local subscriptions:', newSubs.length);
+                    const toUpload = newSubs.map(s => ({ ...s, user_id: user.id }));
+                    await supabase.from('subscriptions').upsert(toUpload);
+                    subs.push(...toUpload);
+                 }
+               }
+             }
+          } catch(e) {}
 
-      const { data: adjs, error: adjsError } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
-      if (adjs && adjs.length > 0) {
-        setAdjustments(adjs as any[]);
-        localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjs));
-      } else if (!adjsError) {
-        const cachedAdjs = localStorage.getItem('adjustments_' + user.id);
-        if (cachedAdjs) {
-          const parsed = JSON.parse(cachedAdjs);
-          if (Array.isArray(parsed)) setAdjustments(parsed);
+          setSubscriptions(subs as any[]);
+          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subs));
+        } else if (!subsError) {
+          console.log('[BoaWallet] Supabase empty, checking Firebase migration...');
+          // 2. Try Firebase Migration (Secondary/Old)
+          try {
+            const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
+            const querySnapshot = await getDocs(q);
+            const fireSubs: any[] = [];
+            querySnapshot.forEach((doc) => { fireSubs.push({ ...doc.data(), id: doc.id }); });
+            
+            if (fireSubs.length > 0) {
+              console.log('[BoaWallet] Found Firebase data, migrating:', fireSubs.length);
+              setSubscriptions(fireSubs);
+              // Migrate to Supabase
+              for (const sub of fireSubs) { 
+                await supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }); 
+              }
+            } else {
+              // 3. Last resort: LocalStorage
+              const cachedSubs = localStorage.getItem('subscriptions_' + user.id) || localStorage.getItem('subscriptions');
+              if (cachedSubs) {
+                const parsed = JSON.parse(cachedSubs);
+                if (Array.isArray(parsed)) {
+                   console.log('[BoaWallet] Restoring from local cache:', parsed.length);
+                   setSubscriptions(parsed);
+                }
+              }
+            }
+          } catch (err) { console.error('Firebase pull failed', err); }
         }
+
+        const { data: adjs, error: adjsError } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
+        if (adjs && adjs.length > 0) {
+          setAdjustments(adjs as any[]);
+          localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjs));
+        }
+      } catch (err) {
+        console.error('[BoaWallet] Sync failed', err);
       }
     };
 
@@ -231,30 +259,56 @@ export default function App() {
     try {
       if (Capacitor.isNativePlatform()) {
         try {
+          console.log('[BoaWallet] Starting native sign-in...');
           const result = await FirebaseAuthentication.signInWithGoogle();
           const idToken = result.credential?.idToken;
+          
           if (idToken) {
-            const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+            console.log('[BoaWallet] Native sign-in success, sending token to Supabase...');
+            const { error } = await supabase.auth.signInWithIdToken({ 
+              provider: 'google', 
+              token: idToken 
+            });
             if (error) throw error;
+            console.log('[BoaWallet] Supabase session established.');
             return;
+          } else {
+            throw new Error('No idToken received from native sign-in.');
           }
-        } catch (nativeError) {
-          console.warn('Native sign-in error, using browser fallback', nativeError);
-          const { data, error } = await supabase.auth.signInWithOAuth({
+        } catch (nativeError: any) {
+          console.warn('[BoaWallet] Native sign-in failed, checking fallback...', nativeError);
+          
+          // Browser fallback - IMPORTANT: Redirect flow depends on having 'Client Secret' in Supabase
+          // If the user gets 400 'missing OAuth secret', it's because Supabase provider is not configured with secret.
+          const { error } = await supabase.auth.signInWithOAuth({
             provider: 'google',
-            options: { redirectTo: 'io.boa.wallet://auth', skipBrowserRedirect: false }
+            options: { 
+              redirectTo: 'io.boa.wallet://auth', 
+              skipBrowserRedirect: false 
+            }
           });
-          if (error) throw error;
-          if (data?.url) window.open(data.url, '_system');
+          if (error) {
+            if (error.message.includes('OAuth secret')) {
+              alert(language === 'pt' 
+                ? 'Atenção: O login via navegador não está configurado no painel Supabase (Falta o OAuth Secret). Por favor, use o Google Play Services ou atualize sua configuração.' 
+                : 'Warning: Browser login is not configured in Supabase (OAuth Secret missing). Please use Google Play Services or update your dashboard.');
+            } else {
+              throw error;
+            }
+          }
           return;
         }
       } else {
-        const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
+        // Web Platform
+        const { error } = await supabase.auth.signInWithOAuth({ 
+          provider: 'google', 
+          options: { redirectTo: window.location.origin } 
+        });
         if (error) throw error;
       }
     } catch (error: any) {
-      console.error('Login error', error);
-      alert(language === 'pt' ? 'Erro de login: ' + error.message : 'Login error: ' + error.message);
+      console.error('[BoaWallet] Fatal login error', error);
+      alert(language === 'pt' ? 'Erro crítico de login: ' + error.message : 'Critical login error: ' + error.message);
     }
   };
 
@@ -285,7 +339,10 @@ export default function App() {
         if (isNew) setSubscriptions(s => [...s, fullSub as any]);
         else setSubscriptions(s => s.map(x => x.id === sub.id ? (fullSub as any) : x));
 
-        await supabase.from('subscriptions').upsert(fullSub);
+        // Dual Write to both databases for maximum availability
+        const supaPromise = supabase.from('subscriptions').upsert(fullSub);
+        const firePromise = setDoc(doc(db, 'subscriptions', fullSub.id), fullSub);
+        await Promise.allSettled([supaPromise, firePromise]);
       } catch (error) { console.error('Save error', error); }
     } else {
       setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]);
@@ -295,8 +352,13 @@ export default function App() {
   };
 
   const handleDelete = async (id: string) => {
-    if (user) await supabase.from('subscriptions').delete().eq('id', id).eq('user_id', user.id);
-    else setSubscriptions(subs => subs.filter(s => s.id !== id));
+    if (user) {
+      const supaPromise = supabase.from('subscriptions').delete().eq('id', id).eq('user_id', user.id);
+      const firePromise = deleteDoc(doc(db, 'subscriptions', id));
+      await Promise.allSettled([supaPromise, firePromise]);
+    } else {
+      setSubscriptions(subs => subs.filter(s => s.id !== id));
+    }
     setSubToDelete(null);
   };
 
@@ -305,15 +367,20 @@ export default function App() {
 
   // --- Export/Import ---
   const exportPDF = () => {
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.width;
-    doc.setFontSize(20);
-    doc.text('Boa Wallet - Relat\u00f3rio v1.5.0', pageWidth / 2, 20, { align: 'center' });
-    
-    const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
-    const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
-    autoTable(doc, { head: [['Nome', 'Categoria', 'Custo']], body: data, startY: 30 });
-    doc.save('boa-wallet-report.pdf');
+    try {
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      doc.setFontSize(20);
+      doc.text('Boa Wallet - Relatório v1.5.0', pageWidth / 2, 20, { align: 'center' });
+      
+      const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
+      const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
+      autoTable(doc, { head: [['Nome', 'Categoria', 'Custo']], body: data, startY: 30 });
+      doc.save('boa-wallet-report.pdf');
+    } catch (err: any) {
+      console.error('PDF generation error', err);
+      alert(language === 'pt' ? 'Erro na exportação para PDF!' : 'PDF Export Error!');
+    }
   };
 
   const exportJSON = async () => {
@@ -333,22 +400,49 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const data = JSON.parse(e.target?.result as string);
-        if (data.subscriptions) {
+        const content = e.target?.result as string;
+        if (!content) throw new Error('Empty file');
+        const data = JSON.parse(content);
+        
+        if (data.subscriptions && Array.isArray(data.subscriptions)) {
           const normalized = data.subscriptions.map((s: any) => ({
              ...s,
+             id: s.id || Date.now().toString() + Math.random(),
              sharedWith: (s.sharedWith || []).map((m: any) => ({
                 ...m,
+                id: m.id || Date.now().toString() + Math.random(),
                 amount: m.amount || 0,
                 currency: m.currency || s.costCurrency || 'BRL',
                 info: m.info || ''
              }))
           }));
+          
           setSubscriptions(normalized);
-          if (user) await supabase.from('subscriptions').upsert(normalized.map((s: any) => ({ ...s, user_id: user.id })));
+          localStorage.setItem('subscriptions', JSON.stringify(normalized));
+          
+          if (user) {
+            console.log('[BoaWallet] Syncing imported data to Cloud...');
+            const toUpload = normalized.map((s: any) => ({ ...s, user_id: user.id }));
+            
+            // Push to Supabase
+            const supaPromise = supabase.from('subscriptions').upsert(toUpload);
+            
+            // Push to Firebase (one by one as setDoc)
+            const firePromises = toUpload.map((item: any) => setDoc(doc(db, 'subscriptions', item.id), item));
+            
+            const [supaRes] = await Promise.allSettled([supaPromise, ...firePromises]);
+            if (supaRes.status === 'rejected') console.error('Cloud sync error:', supaRes.reason);
+            
+            localStorage.setItem('subscriptions_' + user.id, JSON.stringify(toUpload));
+          }
+          alert(language === 'pt' ? 'Importação concluída com sucesso!' : 'Import successful!');
+        } else {
+          throw new Error('Invalid JSON structure');
         }
-        alert('Sucesso!');
-      } catch (err) { alert('Erro no arquivo JSON'); }
+      } catch (err: any) { 
+        console.error('Import error:', err);
+        alert(language === 'pt' ? 'Erro ao importar arquivo: ' + err.message : 'Error importing file: ' + err.message); 
+      }
     };
     reader.readAsText(file);
     event.target.value = '';
@@ -361,14 +455,12 @@ export default function App() {
     <div className="min-h-screen bg-[#0a0a0a] text-white selection:bg-[#d0d0a0]/30">
       {/* HEADER */}
       <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-md border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 cursor-pointer" onClick={handleSecretClick}>
-            <div className="w-9 h-9 bg-[#d0d0a0] rounded-xl flex items-center justify-center shadow-lg">
-              <span className="text-[#0a0a0a] font-bold text-lg">B</span>
+        <div className="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 cursor-pointer select-none" onClick={handleSecretClick}>
+            <div className="w-12 h-12 bg-[#d0d0a0] rounded-2xl flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
+              <span className="text-[#0a0a0a] font-black text-2xl">B</span>
             </div>
-            <h1 className="text-lg font-semibold tracking-tight hidden sm:flex items-center gap-1.5">
-              Boa Wallet <span className="text-[10px] text-gray-500 py-0.5 px-1.5 bg-gray-800 rounded-md">v1.5.0</span>
-            </h1>
+            {/* Removed the Boa Wallet text title space to give more room for actions */}
           </div>
 
           <div className="flex items-center gap-2">
@@ -400,31 +492,28 @@ export default function App() {
               )}
             </div>
 
-            {/* Theme */}
-            <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="w-8 h-8 rounded-lg bg-[#1a1a1a] border border-gray-800 flex items-center justify-center text-gray-400">
-              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
-
+            {/* Theme Toggle Removed */}
+            
             {/* User */}
-            {authLoading ? <div className="w-8 h-8 rounded-full border-2 border-[#d0d0a0]/30 border-t-[#d0d0a0] animate-spin" /> : user ? (
+            {authLoading ? <div className="w-10 h-10 rounded-full border-2 border-[#d0d0a0]/30 border-t-[#d0d0a0] animate-spin" /> : user ? (
               <div className="relative">
-                {user.user_metadata?.avatar_url ? (
-                  <img src={user.user_metadata.avatar_url} onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-8 h-8 rounded-full border border-gray-800 cursor-pointer" alt="" />
+                {user.user_metadata?.avatar_url || user.user_metadata?.picture ? (
+                  <img src={user.user_metadata?.avatar_url || user.user_metadata?.picture} onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-10 h-10 rounded-full border border-gray-800 cursor-pointer object-cover" alt="User" referrerPolicy="no-referrer" />
                 ) : (
-                  <div onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-xs cursor-pointer">{(user.email || 'U').charAt(0).toUpperCase()}</div>
+                  <div onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold cursor-pointer">{(user.user_metadata?.full_name || user.email || 'U').charAt(0).toUpperCase()}</div>
                 )}
                 {showProfileMenu && (
-                  <div className="absolute right-0 top-full mt-1 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-1 min-w-[140px]">
-                    <button onClick={handleLogout} className="w-full text-left px-3 py-2 text-red-400 text-xs flex items-center gap-2"><LogOut size={14} /> Sair</button>
+                  <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-1 min-w-[140px]">
+                    <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-red-400 text-sm flex items-center gap-2 hover:bg-gray-800"><LogOut size={16} /> Sair</button>
                   </div>
                 )}
               </div>
             ) : (
-              <button onClick={handleLogin} className="px-3 py-1.5 bg-[#d0d0a0] text-[#0a0a0a] rounded-lg text-xs font-bold transition-transform active:scale-95">Login</button>
+              <button onClick={handleLogin} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
             )}
 
-            <button onClick={openNew} className="bg-[#5A5A40] hover:bg-[#6c6c51] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-md">
-              <Plus size={16} /> <span className="hidden sm:inline">Novo</span>
+            <button onClick={openNew} className="bg-[#5A5A40] hover:bg-[#6c6c51] px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md ml-2 transition-transform hover:scale-105 active:scale-95 text-[#d0d0a0]">
+              <Plus size={20} /> <span className="">Novo</span>
             </button>
           </div>
         </div>
@@ -473,7 +562,7 @@ export default function App() {
           <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-8 max-w-sm w-full text-center">
             <div className="w-16 h-16 bg-red-900/30 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6"><AlertTriangle size={32} /></div>
             <h3 className="text-xl font-bold mb-2">Excluir Assinatura?</h3>
-            <p className="text-gray-400 mb-8 text-sm">Esta a\u00e7\u00e3o n\u00e3o pode ser desfeita.</p>
+            <p className="text-gray-400 mb-8 text-sm">Esta ação não pode ser desfeita.</p>
             <div className="flex gap-4">
               <button onClick={() => setSubToDelete(null)} className="flex-1 py-3 rounded-xl bg-gray-800 font-bold hover:bg-gray-700 transition-colors">Cancelar</button>
               <button onClick={() => handleDelete(subToDelete)} className="flex-1 py-3 rounded-xl bg-red-600 font-bold hover:bg-red-700 transition-colors">Excluir</button>
@@ -487,7 +576,7 @@ export default function App() {
           <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-8 max-w-sm w-full text-center">
             <h3 className="text-xl font-bold mb-4">Desabilitar {disablePromptSub.name}</h3>
             <div className="flex flex-col gap-3">
-              <button onClick={() => confirmDisable('cancelled_temporary')} className="py-4 rounded-xl bg-orange-600 font-bold hover:bg-orange-700 transition-all">Pausa Tempor\u00e1ria</button>
+              <button onClick={() => confirmDisable('cancelled_temporary')} className="py-4 rounded-xl bg-orange-600 font-bold hover:bg-orange-700 transition-all">Pausa Temporária</button>
               <button onClick={() => confirmDisable('cancelled_permanent')} className="py-4 rounded-xl bg-red-900/50 text-red-400 border border-red-900 font-bold hover:bg-red-900/70 transition-all">Cancelamento Permanente</button>
               <button onClick={() => setDisablePromptSub(null)} className="py-2 text-gray-500 hover:text-white transition-colors">Voltar</button>
             </div>
@@ -499,10 +588,10 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-8 max-w-sm w-full text-center">
              <h3 className="text-xl font-bold mb-4">{renewalPromptSub.name}</h3>
-             <p className="text-gray-400 mb-6 font-medium">Renovar automaticamente no pr\u00f3ximo m\u00eas?</p>
+             <p className="text-gray-400 mb-6 font-medium">Renovar automaticamente no próximo mês?</p>
              <div className="flex flex-col gap-3">
                <button onClick={() => handleRenewalAnswer(true)} className="py-4 rounded-xl bg-emerald-600 font-bold hover:bg-emerald-700 transition-all">Sim, renovar</button>
-               <button onClick={() => handleRenewalAnswer(false)} className="py-4 rounded-xl bg-gray-800 font-bold hover:bg-gray-700 transition-all">N\u00e3o, me lembre</button>
+               <button onClick={() => handleRenewalAnswer(false)} className="py-4 rounded-xl bg-gray-800 font-bold hover:bg-gray-700 transition-all">Não, me lembre</button>
              </div>
           </div>
         </div>
@@ -521,6 +610,51 @@ export default function App() {
                 <Upload size={20} className="text-[#d0d0a0]" /> Importar JSON
                 <input type="file" onChange={importJSON} className="hidden" />
               </label>
+              <button 
+                onClick={async () => {
+                  if (user) {
+                     alert(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
+                     try {
+                       // 1. Fetch from Supabase
+                       const { data: supaData } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
+                       const supaSubs = (supaData as any[]) || [];
+                       
+                       // 2. Fetch from Firebase
+                       const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
+                       const snap = await getDocs(q);
+                       const fireSubs: any[] = [];
+                       snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
+                       
+                       // 3. Merge (Supabase overrides Firebase on ID collision)
+                       const mergedMap = new Map();
+                       fireSubs.forEach(s => mergedMap.set(s.id, s));
+                       supaSubs.forEach(s => mergedMap.set(s.id, s)); // Supabase wins
+                       
+                       const merged = Array.from(mergedMap.values());
+                       
+                       // 4. Update UI & Local Storage
+                       setSubscriptions(merged);
+                       localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
+                       
+                       // 5. Push full merged list back to both properly
+                       if (merged.length > 0) {
+                         supabase.from('subscriptions').upsert(merged);
+                         merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item));
+                       }
+                       
+                       alert(language === 'pt' ? 'Sincronização Completa!' : 'Sync Complete!');
+                     } catch (err) {
+                       console.error('Manual sync failed', err);
+                       alert(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error');
+                     }
+                  } else {
+                     alert(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync');
+                  }
+                }} 
+                className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"
+              >
+                <Database size={20} className="text-emerald-500" /> Sincronizar Nuvem
+              </button>
               <button onClick={exportPDF} className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"><FileText size={20} className="text-red-500" /> Exportar PDF</button>
             </div>
           </div>
