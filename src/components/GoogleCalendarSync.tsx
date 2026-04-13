@@ -166,7 +166,7 @@ export function GoogleCalendarSync({ subscriptions }: GoogleCalendarSyncProps) {
   const [syncResult, setSyncResult] = useState<'success' | 'error' | null>(null);
   const [syncMessage, setSyncMessage] = useState('');
 
-  const activeSubs = subscriptions.filter((s) => s.status !== 'cancelled');
+  const activeSubs = subscriptions.filter((s) => !s.status?.startsWith('cancelled'));
 
   const handleSync = async () => {
     if (!googleAccessToken) {

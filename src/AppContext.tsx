@@ -34,7 +34,7 @@ const getBrowserLanguage = (): Language => {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguage] = useState<Language>(getBrowserLanguage());
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [exchangeRates, setExchangeRates] = useState<Record<Currency, number>>(DEFAULT_EXCHANGE_RATES);
   const [userName, setUserName] = useState<string>(() => localStorage.getItem('userName') || '');
   const [gender, setGender] = useState<Gender>(() => (localStorage.getItem('userGender') as Gender) || 'N');
@@ -47,7 +47,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       const currentUser = session?.user || null;
       setUser(currentUser);
-      if (currentUser?.user_metadata?.full_name && !userName) {
+      if (currentUser?.user_metadata?.full_name) {
         setUserName(currentUser.user_metadata.full_name);
       }
       setAuthLoading(false);
@@ -57,13 +57,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const currentUser = session?.user || null;
       setUser(currentUser);
-      if (currentUser?.user_metadata?.full_name && !userName) {
+      if (currentUser?.user_metadata?.full_name) {
         setUserName(currentUser.user_metadata.full_name);
+      } else if (!currentUser) {
+        // User logged out - clear userName
+        setUserName('');
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [userName]);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('userName', userName);
@@ -73,9 +76,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('userGender', gender);
   }, [gender]);
 
+  // Force dark mode always
   useEffect(() => {
     document.documentElement.classList.add('dark');
-  }, [theme]);
+  }, []);
 
   // Fetch real-time exchange rates
   useEffect(() => {

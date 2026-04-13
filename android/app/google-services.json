@@ -14,18 +14,31 @@
       },
       "oauth_client": [
         {
+          "client_id": "550975859439-ej4j7fag92f1ftn724432i9dqsnbvnjn.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "io.boa.wallet",
+            "certificate_hash": "aabd146b5f695bc3286958b6826fca0e676f9d9a"
+          }
+        },
+        {
           "client_id": "550975859439-77fmgi9k4mbh2l0cvr5qh8lb725luniq.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyBhYwv4KUT-R5VpQM541K-K31wlCCWuRqA"
+          "current_key": "AIzaSyCr_BaKnfv65AdteIT0hH5hSVOvTxix_Sg"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "550975859439-77fmgi9k4mbh2l0cvr5qh8lb725luniq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

@@ -343,9 +343,13 @@ export function Dashboard({ subscriptions, baseCurrency, exchangeRates, adjustme
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {persona && (
           <div className="bg-white dark:bg-[#1a1a1a] p-4 rounded-2xl shadow-sm border border-gray-100/50 dark:border-gray-800/50 flex items-center gap-4">
-            {user?.photoURL ? (
-              <img src={user.photoURL} alt="Profile" className="w-12 h-12 rounded-full object-cover shrink-0" referrerPolicy="no-referrer" />
-            ) : null}
+            {user?.user_metadata?.avatar_url || user?.user_metadata?.picture || (user as any)?.photoURL ? (
+              <img src={user.user_metadata?.avatar_url || user.user_metadata?.picture || (user as any).photoURL} alt="Profile" className="w-12 h-12 rounded-full object-cover shrink-0" referrerPolicy="no-referrer" />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center shrink-0">
+                <UserCircle size={24} className="text-gray-500" />
+              </div>
+            )}
             <div>
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('app.persona')}</p>
               <p className="text-lg font-medium text-gray-900 dark:text-white">{persona}</p>

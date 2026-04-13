@@ -23,6 +23,16 @@ export interface Adjustment {
 
 export type SubscriptionType = 'Subscription' | 'FixedExpense';
 
+export interface SharedMember {
+  id: string;
+  name: string;
+  amount: number;
+  currency: Currency;
+  info?: string;
+  paymentDate?: number;
+  paidCurrentMonth?: boolean;
+}
+
 export interface Subscription {
   id: string;
   name: string;
@@ -67,10 +77,12 @@ export interface Subscription {
   
   isSingleExpense?: boolean;
   isFlexibleDate?: boolean;
-  sharedWith?: { id: string; name: string; paymentDate?: number; paidCurrentMonth?: boolean }[];
+  sharedWith?: SharedMember[];
 
   status?: 'active' | 'cancelled_temporary' | 'cancelled_permanent';
   paymentHistory?: Record<string, 'paid' | 'skipped' | 'auto-paid'>;
+  autoRenewDate?: number; // Day of month to auto-reactivate (for temp pauses)
+  reminderDisabled?: boolean; // Disable 10-day reminders for temp pauses
 }
 
 // Default fallback rates

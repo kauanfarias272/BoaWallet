@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown, Power } from 'lucide-react';
+import { Edit2, Trash2, CalendarPlus, X, TrendingUp, TrendingDown, Power, Users as UsersIcon } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 
@@ -11,6 +11,7 @@ interface SubscriptionListProps {
   exchangeRates: Record<Currency, number>;
   onEdit: (sub: Subscription) => void;
   onDelete: (id: string) => void;
+  onToggleStatus?: (id: string, currentStatus: string) => void;
 }
 
 export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete, onToggleStatus }: SubscriptionListProps) {
@@ -59,7 +60,7 @@ END:VCALENDAR`;
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="bg-[#fdfbf7] dark:bg-[#121212] text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            <tr className="bg-[#121212] text-xs uppercase tracking-wider text-gray-400">
               <th className="p-4 font-medium">{t('list.service')}</th>
               <th className="p-4 font-medium">{t('list.dueDate')}</th>
               <th className="p-4 font-medium hidden md:table-cell">{t('list.originalCost')}</th>
@@ -93,7 +94,7 @@ END:VCALENDAR`;
               return (
                 <React.Fragment key={sub.id}>
                   <tr
-                    className="hover:bg-[#fdfbf7] dark:hover:bg-[#222] transition-colors group cursor-pointer sm:cursor-default"
+                    className="hover:bg-[#222] transition-colors group cursor-pointer sm:cursor-default"
                     onClick={() => {
                       if (window.innerWidth < 640) {
                         setSelectedSub(sub);
@@ -102,7 +103,7 @@ END:VCALENDAR`;
                   >
                     <td className="p-4">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-[#fdfbf7] dark:bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
+                        <div className="w-12 h-12 rounded-full bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
                           {sub.logoUrl ? (
                             <img src={sub.logoUrl} alt={sub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
                           ) : (
@@ -110,10 +111,10 @@ END:VCALENDAR`;
                           )}
                         </div>
                         <div className="hidden sm:block">
-                          <p className="font-medium text-gray-900 dark:text-white flex items-center gap-2 text-base">
+                          <p className="font-medium text-white flex items-center gap-2 text-base">
                             {sub.name}
                             {sub.type === 'FixedExpense' && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f5f5f0] text-[#5A5A40] dark:bg-[#2a2a20] dark:text-[#d0d0a0]">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#2a2a20] text-[#d0d0a0]">
                                 {t('form.typeFixedExpense')}
                               </span>
                             )}
@@ -128,20 +129,26 @@ END:VCALENDAR`;
                               </span>
                             )}
                           </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any)}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any)}</p>
+                          {sub.sharedWith && sub.sharedWith.length > 0 && (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <UsersIcon size={10} className="text-emerald-400" />
+                              <span className="text-[10px] text-emerald-400">{sub.sharedWith.length} {t('list.clients' as any)}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
                     <td className="p-4">
                       <div className="flex flex-col">
-                        <span className="text-sm text-gray-900 dark:text-gray-300">
+                        <span className="text-sm text-gray-300">
                           {sub.billingCycle === 'Yearly' && sub.dueMonth ? (
                             <>{`${sub.dueDate}/${sub.dueMonth < 10 ? '0' : ''}${sub.dueMonth}`}</>
                           ) : (
-                            <>Dia {sub.dueDate}</>
+                            <>{t('list.day' as any)} {sub.dueDate}</>
                           )}
                         </span>
-                        <span className="text-xs text-gray-500 dark:text-gray-400">{sub.billingCycle === 'Monthly' ? t('form.monthly') : t('form.yearly')}</span>
+                        <span className="text-xs text-gray-400">{sub.billingCycle === 'Monthly' ? t('form.monthly') : t('form.yearly')}</span>
                       </div>
                     </td>
                     <td className="p-4 hidden md:table-cell">
@@ -219,23 +226,32 @@ END:VCALENDAR`;
                       </div>
                     </td>
                     <td className="p-4 text-right hidden sm:table-cell">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1">
+                        {onToggleStatus && (
+                          <button
+                            onClick={() => onToggleStatus(sub.id, sub.status || 'active')}
+                            title={sub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}
+                            className={`p-2 transition-colors rounded-lg ${sub.status?.startsWith('cancelled') ? 'text-emerald-400 hover:bg-emerald-900/30' : 'text-gray-400 hover:text-orange-400 hover:bg-orange-900/30'}`}
+                          >
+                            <Power size={16} />
+                          </button>
+                        )}
                         <button
                           onClick={() => generateICS(sub)}
                           title={t('app.addToCalendar')}
-                          className="p-2 text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                          className="p-2 text-gray-400 hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-900/30"
                         >
                           <CalendarPlus size={16} />
                         </button>
                         <button
                           onClick={() => onEdit(sub)}
-                          className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                          className="p-2 text-gray-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-900/30"
                         >
                           <Edit2 size={16} />
                         </button>
                         <button
                           onClick={() => onDelete(sub.id)}
-                          className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30"
+                          className="p-2 text-gray-400 hover:text-red-400 transition-colors rounded-lg hover:bg-red-900/30"
                         >
                           <Trash2 size={16} />
                         </button>
@@ -243,13 +259,13 @@ END:VCALENDAR`;
                     </td>
                   </tr>
                   {(sub.subItems && sub.subItems.length > 0) || sub.notes ? (
-                    <tr className="bg-[#fdfbf7]/50 dark:bg-[#121212]/50">
+                    <tr className="bg-[#121212]/50">
                       <td colSpan={7} className="p-0">
-                        <div className="pl-20 pr-4 py-3 border-t border-gray-50 dark:border-gray-800/50">
+                        <div className="pl-20 pr-4 py-3 border-t border-gray-800/50">
                           {sub.notes && (
                             <div className="mb-3">
-                              <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">{t('form.notes')}:</div>
-                              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{sub.notes}</p>
+                              <div className="text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">{t('form.notes')}:</div>
+                              <p className="text-sm text-gray-300 whitespace-pre-wrap">{sub.notes}</p>
                             </div>
                           )}
                           {sub.subItems && sub.subItems.length > 0 && (
@@ -406,27 +422,36 @@ END:VCALENDAR`;
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              {onToggleStatus && (
+                <button
+                  onClick={() => { onToggleStatus(selectedSub.id, selectedSub.status || 'active'); setSelectedSub(null); }}
+                  className={`flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl hover:bg-[#2a2a2a] transition-colors ${selectedSub.status?.startsWith('cancelled') ? 'text-emerald-400' : 'text-orange-400'}`}
+                >
+                  <Power size={24} />
+                  <span className="text-xs font-medium">{selectedSub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}</span>
+                </button>
+              )}
               <button
                 onClick={() => { generateICS(selectedSub); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-emerald-400 hover:bg-[#2a2a2a] transition-colors"
               >
                 <CalendarPlus size={24} />
-                <span className="text-xs font-medium">Lembrete</span>
+                <span className="text-xs font-medium">{t('list.reminder' as any)}</span>
               </button>
               <button
                 onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"
               >
                 <Edit2 size={24} />
-                <span className="text-xs font-medium">Editar</span>
+                <span className="text-xs font-medium">{t('list.edit' as any)}</span>
               </button>
               <button
                 onClick={() => { onDelete(selectedSub.id); setSelectedSub(null); }}
                 className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-red-400 hover:bg-[#2a2a2a] transition-colors"
               >
                 <Trash2 size={24} />
-                <span className="text-xs font-medium">Remover</span>
+                <span className="text-xs font-medium">{t('list.remove' as any)}</span>
               </button>
             </div>
           </div>
