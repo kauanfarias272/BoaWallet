@@ -58,7 +58,8 @@ export interface Subscription {
   
   fiatReferenceAmount?: number;
   fiatReferenceCurrency?: Currency;
-  createdAt?: number;
+  createdAt?: string | number;
+  updatedAt?: string | number;
   
   subItems: SubItem[];
   

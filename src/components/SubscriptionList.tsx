@@ -196,10 +196,9 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                       </div>
                     </td>
                     <td className="p-4 text-right hidden sm:table-cell">
-                      <div className="flex items-center justify-end gap-1">
                         {onToggleStatus && (
                           <button
-                            onClick={() => onToggleStatus(sub.id, sub.status || 'active')}
+                            onClick={(e) => { e.stopPropagation(); onToggleStatus(sub.id, sub.status || 'active'); }}
                             title={sub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}
                             className={`p-2 transition-colors rounded-lg ${sub.status?.startsWith('cancelled') ? 'text-emerald-400 hover:bg-emerald-900/30' : 'text-gray-400 hover:text-orange-400 hover:bg-orange-900/30'}`}
                           >
@@ -207,18 +206,11 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                           </button>
                         )}
                         <button
-                          onClick={() => onEdit(sub)}
+                          onClick={(e) => { e.stopPropagation(); onEdit(sub); }}
                           className="p-2 text-gray-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-900/30"
                         >
                           <Edit2 size={16} />
                         </button>
-                        <button
-                          onClick={() => onDelete(sub.id)}
-                          className="p-2 text-gray-400 hover:text-red-400 transition-colors rounded-lg hover:bg-red-900/30"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
                     </td>
                   </tr>
                   {(sub.subItems && sub.subItems.length > 0) || sub.notes ? (
@@ -401,13 +393,6 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
               >
                 <Edit2 size={24} />
                 <span className="text-xs font-medium">{t('list.edit' as any)}</span>
-              </button>
-              <button
-                onClick={() => { onDelete(selectedSub.id); setSelectedSub(null); }}
-                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-red-400 hover:bg-[#2a2a2a] transition-colors"
-              >
-                <Trash2 size={24} />
-                <span className="text-xs font-medium">{t('list.remove' as any)}</span>
               </button>
             </div>
           </div>

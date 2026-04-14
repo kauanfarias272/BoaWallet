@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Subscription, Currency, PaymentSource, PaymentMethod, BillingCycle, SubItem } from '../types';
+import { Subscription, Currency, PaymentSource, PaymentMethod, BillingCycle, SubItem, convertCurrency } from '../types';
 import { X, Plus, Trash2, ChevronDown, ArrowDownRight, CheckCircle2, Users, Info, DollarSign } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppContext } from '../AppContext';
@@ -9,6 +9,8 @@ interface SubscriptionFormProps {
   subscription?: Subscription;
   onSave: (sub: Subscription) => void;
   onClose: () => void;
+  baseCurrency: Currency;
+  exchangeRates: Record<Currency, number>;
 }
 
 const CURRENCIES: Currency[] = ['BRL', 'USD', 'EUR', 'GBP', 'JPY', 'TRY', 'ARS', 'INR', 'IDR', 'CAD', 'AUD', 'CHF', 'CNY', 'MXN', 'BTC', 'SATS'];
@@ -109,7 +111,7 @@ const CATEGORY_DEFAULT_EMOJIS: Record<string, string> = {
   'Outros': '📦'
 };
 
-export function SubscriptionForm({ subscription, onSave, onClose }: SubscriptionFormProps) {
+export function SubscriptionForm({ subscription, onSave, onClose, baseCurrency, exchangeRates }: SubscriptionFormProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
 
@@ -312,10 +314,16 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
   };
 
   const removeSharedMember = (id: string) => {
-    setFormData(prev => ({
-      ...prev,
-      sharedWith: (prev.sharedWith || []).filter(m => m.id !== id)
-    }));
+    setFormData(prev => {
+      const newSharedWith = (prev.sharedWith || []).filter(m => m.id !== id);
+      const total = newSharedWith.reduce((acc, m) => acc + convertCurrency(m.amount || 0, m.currency, prev.incomeCurrency || 'BRL', exchangeRates), 0);
+      setIncomeAmountStr(total.toString());
+      return {
+        ...prev,
+        sharedWith: newSharedWith,
+        incomeAmount: total
+      };
+    });
   };
 
   const inputClass = "w-full px-4 py-2 bg-[#121212] border border-gray-700 rounded-xl focus:ring-2 focus:ring-[#5A5A40] outline-none text-white transition-all";
@@ -610,13 +618,30 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
             <div className={sectionBg}>
               <label className="flex items-center gap-3 mb-4 cursor-pointer">
                 <input type="checkbox" name="hasIncome" checked={formData.hasIncome} onChange={handleChange} className="w-4 h-4 rounded border-gray-600 text-emerald-600 focus:ring-emerald-600 bg-[#222]" />
-                <span className="text-sm font-medium text-gray-300">{t('form.shareQuestion' as any)}</span>
+                <span className="text-sm font-medium text-gray-300">This subscription generates financial return (e.g., sharing with friends)</span>
               </label>
 
               {formData.hasIncome && (
                 <div className="space-y-4 pt-4 border-t border-gray-700">
+                  {(!formData.sharedWith || formData.sharedWith.length === 0) && (
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div className="space-y-1">
+                        <label className={labelClass}>{language === 'pt' ? 'Valor do Retorno Mensal' : 'Monthly Return Amount'}</label>
+                        <input type="number" step="0.01" value={incomeAmountStr} onFocus={handleFocus} onChange={e => { setIncomeAmountStr(e.target.value); setFormData(prev => ({...prev, incomeAmount: parseFloat(e.target.value) || 0})); }} className={inputClass} />
+                      </div>
+                      <div className="space-y-1">
+                        <label className={labelClass}>{t('form.currency')}</label>
+                        <select name="incomeCurrency" value={formData.incomeCurrency} onChange={handleChange} className={inputClass}>
+                          {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-gray-500 uppercase tracking-widest font-bold">{t('form.members' as any)}</span>
+                    <span className="text-xs text-gray-500 uppercase tracking-widest font-bold">
+                      {(!formData.sharedWith || formData.sharedWith.length === 0) ? (language === 'pt' ? 'Ou adicione participantes' : 'Or add participants') : t('form.members' as any)}
+                    </span>
                     <button type="button" onClick={addSharedMember} className="flex items-center gap-1 text-xs font-medium text-emerald-400 hover:text-emerald-300"><Plus size={14}/> {t('form.add' as any)}</button>
                   </div>
                   
@@ -648,15 +673,17 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
 
                           <div className="bg-[#1a1a1a] p-3 rounded-xl border border-gray-800 shadow-sm space-y-3 touch-pan-y">
                             <div className="flex items-center gap-2">
-                              <Users size={16} className="text-gray-400 shrink-0" />
-                              <input 
-                                type="text" 
-                                placeholder={t('form.memberName' as any)} 
-                                value={member.name} 
-                                onChange={e => updateSharedMember(member.id, 'name', e.target.value)} 
-                                className="flex-1 bg-transparent text-sm font-medium border-0 focus:ring-0 text-white placeholder:text-gray-600 min-w-0" 
-                              />
-                              <div className="flex items-center gap-1 bg-[#222] px-2 py-1 rounded-lg shrink-0">
+                              <Users size={16} className="text-indigo-400 shrink-0" />
+                              <div className="flex-1 bg-[#121212] border border-gray-700 rounded-lg px-3 py-1.5 focus-within:border-indigo-500/50 transition-colors">
+                                <input 
+                                  type="text" 
+                                  placeholder={t('form.memberName' as any)} 
+                                  value={member.name} 
+                                  onChange={e => updateSharedMember(member.id, 'name', e.target.value)} 
+                                  className="w-full bg-transparent text-sm font-medium border-0 focus:ring-0 text-white placeholder:text-gray-600 p-0" 
+                                />
+                              </div>
+                              <div className="flex items-center gap-1 bg-[#121212] border border-gray-700 px-2 py-1.5 rounded-lg shrink-0">
                                 <span className="text-[10px] text-gray-500 uppercase">Dia</span>
                                 <input 
                                   type="number" 
@@ -669,15 +696,8 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                               </div>
                               <button 
                                 type="button" 
-                                onClick={() => updateSharedMember(member.id, 'paidCurrentMonth', !member.paidCurrentMonth)} 
-                                className={`p-1.5 rounded-lg transition-colors ${member.paidCurrentMonth ? 'text-emerald-500 bg-emerald-900/20' : 'text-gray-600 bg-gray-800/40 hover:bg-gray-800'}`}
-                              >
-                                <CheckCircle2 size={18} />
-                              </button>
-                              <button 
-                                type="button" 
                                 onClick={() => removeSharedMember(member.id)} 
-                                className="p-1.5 text-gray-400 hover:text-red-500 sm:hidden"
+                                className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-900/20 rounded-lg transition-colors sm:hidden"
                                 title="Remover"
                               >
                                 <Trash2 size={18} />
@@ -685,8 +705,8 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                             </div>
 
                             <div className="grid grid-cols-2 gap-2">
-                              <div className="flex items-center gap-2 bg-[#121212] px-3 py-2 rounded-lg border border-gray-800/50">
-                                <DollarSign size={14} className="text-gray-500" />
+                              <div className="flex items-center gap-2 bg-[#121212] px-3 py-2 rounded-lg border border-gray-800/50 group-focus-within:border-emerald-500/50 transition-colors">
+                                <DollarSign size={14} className="text-emerald-500" />
                                 <input 
                                   type="number" 
                                   placeholder="0.00"
@@ -694,16 +714,27 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
                                   onChange={e => {
                                     const val = parseFloat(e.target.value) || 0;
                                     updateSharedMember(member.id, 'amount', val);
-                                    // Optional: update total income
                                     const others = formData.sharedWith?.filter(m => m.id !== member.id) || [];
-                                    const total = others.reduce((acc, m) => acc + (m.amount || 0), 0) + val;
+                                    const memberInIncomeCurrency = convertCurrency(val, member.currency || formData.costCurrency || 'BRL', formData.incomeCurrency || 'BRL', exchangeRates);
+                                    const othersTotal = others.reduce((acc, m) => acc + convertCurrency(m.amount || 0, m.currency, formData.incomeCurrency || 'BRL', exchangeRates), 0);
+                                    const total = othersTotal + memberInIncomeCurrency;
                                     setIncomeAmountStr(total.toString());
+                                    setFormData(prev => ({...prev, incomeAmount: total}));
                                   }} 
                                   className="w-full bg-transparent text-xs border-0 focus:ring-0 text-white p-0" 
                                 />
                                 <select 
                                   value={member.currency || formData.costCurrency} 
-                                  onChange={e => updateSharedMember(member.id, 'currency', e.target.value)}
+                                  onChange={e => {
+                                    const currency = e.target.value as Currency;
+                                    updateSharedMember(member.id, 'currency', currency);
+                                    const others = formData.sharedWith?.filter(m => m.id !== member.id) || [];
+                                    const memberInIncomeCurrency = convertCurrency(member.amount || 0, currency, formData.incomeCurrency || 'BRL', exchangeRates);
+                                    const othersTotal = others.reduce((acc, m) => acc + convertCurrency(m.amount || 0, m.currency, formData.incomeCurrency || 'BRL', exchangeRates), 0);
+                                    const total = othersTotal + memberInIncomeCurrency;
+                                    setIncomeAmountStr(total.toString());
+                                    setFormData(prev => ({...prev, incomeAmount: total}));
+                                  }}
                                   className="bg-transparent text-[10px] border-0 focus:ring-0 text-gray-400 p-0 w-12"
                                 >
                                   {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}

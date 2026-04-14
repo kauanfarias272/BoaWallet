@@ -6,13 +6,14 @@ import { SubscriptionForm } from './components/SubscriptionForm';
 import { WelcomeModal } from './components/WelcomeModal';
 import { Cashflow } from './components/Cashflow';
 import { ClientsTab } from './components/ClientsTab';
-import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember } from './types';
-import { Plus, AlertTriangle, LogIn, LogOut, Download, Upload, FileText, Moon, Sun, ChevronDown, DollarSign, Zap, Database } from 'lucide-react';
+import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember, BillingCycle } from './types';
+import { Plus, AlertTriangle, LogIn, LogOut, Download, Upload, FileText, Moon, Sun, ChevronDown, DollarSign, Zap, Database, Settings } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
-import { db } from './firebase';
+import { db, auth as firebaseAuth } from './firebase';
 import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { signInWithCredential, GoogleAuthProvider } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
@@ -47,9 +48,18 @@ export default function App() {
   const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
   const [secretClickCount, setSecretClickCount] = useState(0);
   const secretTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToast = (msg: string, ok = true) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast({ msg, ok });
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 4000);
+  };
 
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
@@ -264,7 +274,18 @@ export default function App() {
           const idToken = result.credential?.idToken;
           
           if (idToken) {
-            console.log('[BoaWallet] Native sign-in success, sending token to Supabase...');
+            console.log('[BoaWallet] Native sign-in success, sending token to backend...');
+            
+            // Sync session to Firebase Web SDK to satisfy Firestore rules
+            try {
+              const credential = GoogleAuthProvider.credential(idToken);
+              await signInWithCredential(firebaseAuth, credential);
+              console.log('[BoaWallet] Firebase session established.');
+            } catch (fbErr) {
+              console.warn('[BoaWallet] Failed to sync Firebase auth, Firestore rules may fail', fbErr);
+            }
+
+            // Sync session to Supabase
             const { error } = await supabase.auth.signInWithIdToken({ 
               provider: 'google', 
               token: idToken 
@@ -324,26 +345,130 @@ export default function App() {
       setAdjustments([]);
     } catch (error) { console.error('Logout error', error); }
   };
+  
+  // Only include columns that exist in the Supabase table — prevents "unknown column" errors
+  const toSupabaseRow = (sub: Subscription, userId: string) => ({
+    id: sub.id,
+    user_id: userId,
+    userId: (sub as any).userId || (sub as any).user_id || userId,
+    name: sub.name,
+    type: sub.type,
+    emoji: sub.emoji,
+    logoUrl: sub.logoUrl,
+    bankLogoUrl: sub.bankLogoUrl,
+    category: sub.category,
+    notes: sub.notes,
+    status: sub.status,
+    costAmount: sub.costAmount,
+    costCurrency: sub.costCurrency,
+    billingCycle: sub.billingCycle,
+    dueDate: sub.dueDate,
+    dueMonth: sub.dueMonth,
+    originalCost: sub.originalCost,
+    paymentMethod: sub.paymentMethod,
+    paymentSource: sub.paymentSource,
+    isPromotional: sub.isPromotional,
+    promoEndDate: sub.promoEndDate,
+    hasCashback: sub.hasCashback,
+    cashbackPercentage: sub.cashbackPercentage,
+    autoRenewDate: sub.autoRenewDate,
+    reminderDisabled: sub.reminderDisabled,
+    paymentHistory: sub.paymentHistory,
+    hasEarlyPayDiscount: sub.hasEarlyPayDiscount,
+    earlyPayDate: sub.earlyPayDate,
+    earlyPayCost: sub.earlyPayCost,
+    hasIncome: sub.hasIncome,
+    incomeAmount: sub.incomeAmount,
+    incomeCurrency: sub.incomeCurrency,
+    incomeFrequency: sub.incomeFrequency,
+    incomeSourceDescription: sub.incomeSourceDescription,
+    sharedWith: sub.sharedWith,
+    subItems: sub.subItems,
+    isSingleExpense: sub.isSingleExpense,
+    isFlexibleDate: sub.isFlexibleDate,
+    fiatReferenceAmount: sub.fiatReferenceAmount,
+    fiatReferenceCurrency: sub.fiatReferenceCurrency,
+    createdAt: sub.createdAt,
+    updatedAt: sub.updatedAt,
+  });
+
+  const normalizeSubscription = (s: any): Subscription => {
+    const normalizeDate = (d: any) => {
+      if (!d) return new Date().toISOString();
+      if (typeof d === 'string' || typeof d === 'number') return d;
+      // Handle Firestore Timestamp object
+      if (d && typeof d === 'object' && 'seconds' in d) {
+        return new Date(d.seconds * 1000).toISOString();
+      }
+      return new Date().toISOString();
+    };
+
+    return {
+      ...s,
+      id: String(s.id || Date.now() + Math.random()),
+      name: s.name || '',
+      emoji: s.emoji || '📺',
+      category: s.category || 'Outros',
+      costAmount: parseFloat(s.costAmount) || 0,
+      costCurrency: (s.costCurrency as Currency) || 'BRL',
+      billingCycle: (s.billingCycle as BillingCycle) || 'Monthly',
+      dueDate: parseInt(s.dueDate) || 1,
+      createdAt: normalizeDate(s.createdAt),
+      updatedAt: normalizeDate(s.updatedAt || s.createdAt),
+      user_id: s.user_id || s.userId,
+      userId: s.userId || s.user_id,
+      subItems: (s.subItems || []).map((i: any) => ({
+        id: String(i.id || Math.random()),
+        name: i.name || '',
+        costAmount: parseFloat(i.costAmount) || 0
+      })),
+      sharedWith: (s.sharedWith || []).map((m: any) => ({
+        ...m,
+        id: String(m.id || Math.random()),
+        amount: parseFloat(m.amount) || 0,
+        currency: (m.currency as Currency) || s.costCurrency || 'BRL'
+      })),
+      hasIncome: !!s.hasIncome,
+      hasCashback: !!s.hasCashback,
+      hasEarlyPayDiscount: !!s.hasEarlyPayDiscount,
+      isPromotional: !!s.isPromotional
+    } as Subscription;
+  };
 
   const handleSave = async (sub: Subscription) => {
     if (user) {
       try {
         const isNew = !subscriptions.find(s => s.id === sub.id);
-        const fullSub = {
+        const fullSub = normalizeSubscription({
           ...sub,
           user_id: user.id,
           createdAt: isNew ? new Date().toISOString() : sub.createdAt,
           updatedAt: new Date().toISOString()
-        };
-        // Optimistic
-        if (isNew) setSubscriptions(s => [...s, fullSub as any]);
-        else setSubscriptions(s => s.map(x => x.id === sub.id ? (fullSub as any) : x));
+        });
 
-        // Dual Write to both databases for maximum availability
-        const supaPromise = supabase.from('subscriptions').upsert(fullSub);
-        const firePromise = setDoc(doc(db, 'subscriptions', fullSub.id), fullSub);
-        await Promise.allSettled([supaPromise, firePromise]);
-      } catch (error) { console.error('Save error', error); }
+        // Optimistic update + local backup
+        const updated = isNew
+          ? [...subscriptions, fullSub]
+          : subscriptions.map((x: Subscription) => x.id === sub.id ? fullSub : x);
+        setSubscriptions(updated);
+        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updated));
+
+        // Supabase (primary) — strict row mapper prevents unknown-column errors
+        const supaRow = toSupabaseRow(fullSub, user.id);
+        const supaResult = await supabase.from('subscriptions').upsert(supaRow);
+        if (supaResult.error) {
+          console.error('[BoaWallet] Supabase save error:', supaResult.error);
+          showToast(language === 'pt' ? 'Salvo localmente (falha na nuvem)' : 'Saved locally (cloud sync failed)', false);
+        }
+
+        // Firebase (secondary/legacy) — silent, only log
+        setDoc(doc(db, 'subscriptions', fullSub.id), fullSub).catch(fbErr => {
+          console.warn('[BoaWallet] Firebase secondary sync failed (non-critical):', fbErr);
+        });
+      } catch (error: any) {
+        console.error('Save error', error);
+        showToast(language === 'pt' ? 'Salvo localmente (erro de rede)' : 'Saved locally (network error)', false);
+      }
     } else {
       setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]);
     }
@@ -366,7 +491,7 @@ export default function App() {
   const openNew  = () => { setEditingSub(undefined); setIsFormOpen(true); };
 
   // --- Export/Import ---
-  const exportPDF = () => {
+  const exportPDF = async () => {
     try {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
@@ -376,7 +501,18 @@ export default function App() {
       const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
       const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
       autoTable(doc, { head: [['Nome', 'Categoria', 'Custo']], body: data, startY: 30 });
-      doc.save('boa-wallet-report.pdf');
+      
+      if (Capacitor.isNativePlatform()) {
+         const pdfBase64 = doc.output('datauristring').split(',')[1];
+         const result = await Filesystem.writeFile({
+            path: 'boa-wallet-report.pdf',
+            data: pdfBase64,
+            directory: Directory.Documents
+         });
+         await Share.share({ title: 'Boa Wallet Report', url: result.uri });
+      } else {
+         doc.save('boa-wallet-report.pdf');
+      }
     } catch (err: any) {
       console.error('PDF generation error', err);
       alert(language === 'pt' ? 'Erro na exportação para PDF!' : 'PDF Export Error!');
@@ -404,44 +540,45 @@ export default function App() {
         if (!content) throw new Error('Empty file');
         const data = JSON.parse(content);
         
-        if (data.subscriptions && Array.isArray(data.subscriptions)) {
-          const normalized = data.subscriptions.map((s: any) => ({
-             ...s,
-             id: s.id || Date.now().toString() + Math.random(),
-             sharedWith: (s.sharedWith || []).map((m: any) => ({
-                ...m,
-                id: m.id || Date.now().toString() + Math.random(),
-                amount: m.amount || 0,
-                currency: m.currency || s.costCurrency || 'BRL',
-                info: m.info || ''
-             }))
-          }));
-          
-          setSubscriptions(normalized);
-          localStorage.setItem('subscriptions', JSON.stringify(normalized));
-          
-          if (user) {
-            console.log('[BoaWallet] Syncing imported data to Cloud...');
-            const toUpload = normalized.map((s: any) => ({ ...s, user_id: user.id }));
-            
-            // Push to Supabase
-            const supaPromise = supabase.from('subscriptions').upsert(toUpload);
-            
-            // Push to Firebase (one by one as setDoc)
-            const firePromises = toUpload.map((item: any) => setDoc(doc(db, 'subscriptions', item.id), item));
-            
-            const [supaRes] = await Promise.allSettled([supaPromise, ...firePromises]);
-            if (supaRes.status === 'rejected') console.error('Cloud sync error:', supaRes.reason);
-            
-            localStorage.setItem('subscriptions_' + user.id, JSON.stringify(toUpload));
-          }
-          alert(language === 'pt' ? 'Importação concluída com sucesso!' : 'Import successful!');
+        let subscriptionsToImport: any[] = [];
+        if (Array.isArray(data)) {
+          subscriptionsToImport = data;
+        } else if (data.subscriptions && Array.isArray(data.subscriptions)) {
+          subscriptionsToImport = data.subscriptions;
         } else {
-          throw new Error('Invalid JSON structure');
+          throw new Error('Invalid JSON structure: Expected an array or an object with a "subscriptions" key.');
         }
-      } catch (err: any) { 
+
+        const normalized = subscriptionsToImport.map(s => normalizeSubscription(s));
+        
+        setSubscriptions(normalized);
+        localStorage.setItem('subscriptions', JSON.stringify(normalized));
+        
+        if (user) {
+          console.log('[BoaWallet] Syncing imported data to Cloud...');
+          // Use strict mapper to avoid unknown-column Supabase errors
+          const supaRows = normalized.map(s => toSupabaseRow(s, user.id));
+          const toUpload = normalized.map(s => ({ ...s, user_id: user.id, userId: user.id }));
+
+          // Push to Supabase (strict columns only)
+          const supaRes = await supabase.from('subscriptions').upsert(supaRows);
+
+          if (supaRes.error) {
+            console.error('[BoaWallet] Import Supabase error:', supaRes.error);
+            showToast(language === 'pt' ? `${normalized.length} itens importados (falha parcial na nuvem)` : `${normalized.length} items imported (partial cloud sync failure)`, false);
+          } else {
+            showToast(language === 'pt' ? `${normalized.length} itens importados com sucesso!` : `${normalized.length} items imported successfully!`, true);
+          }
+
+          // Firebase (secondary) — silent
+          toUpload.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
+          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(toUpload));
+        } else {
+          showToast(language === 'pt' ? `${normalized.length} itens importados!` : `${normalized.length} items imported!`, true);
+        }
+      } catch (err: any) {
         console.error('Import error:', err);
-        alert(language === 'pt' ? 'Erro ao importar arquivo: ' + err.message : 'Error importing file: ' + err.message); 
+        showToast(language === 'pt' ? 'Erro ao importar: ' + err.message : 'Import error: ' + err.message, false);
       }
     };
     reader.readAsText(file);
@@ -512,6 +649,24 @@ export default function App() {
               <button onClick={handleLogin} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
             )}
 
+            {/* Settings */}
+            <div className="relative">
+              <button onClick={() => setShowSettingsMenu(!showSettingsMenu)} className="w-10 h-10 rounded-lg flex items-center justify-center border border-gray-800 text-gray-400 hover:text-white transition-colors bg-[#1a1a1a]">
+                <Settings size={18} />
+              </button>
+              {showSettingsMenu && (
+                <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-2 w-48 text-sm">
+                  <div className="px-3 pb-2 mb-2 border-b border-gray-800 text-xs font-semibold text-gray-500 uppercase">Exportação & Dados</div>
+                  <button onClick={() => { exportJSON(); setShowSettingsMenu(false); }} className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800"><Download size={16} className="text-[#d0d0a0]" /> Exportar JSON</button>
+                  <label className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800 cursor-pointer">
+                    <Upload size={16} className="text-[#d0d0a0]" /> Importar JSON
+                    <input type="file" onChange={(e) => { importJSON(e); setShowSettingsMenu(false); }} className="hidden" />
+                  </label>
+                  <button onClick={() => { exportPDF(); setShowSettingsMenu(false); }} className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800"><FileText size={16} className="text-red-500" /> Exportar PDF</button>
+                </div>
+              )}
+            </div>
+
             <button onClick={openNew} className="bg-[#5A5A40] hover:bg-[#6c6c51] px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md ml-2 transition-transform hover:scale-105 active:scale-95 text-[#d0d0a0]">
               <Plus size={20} /> <span className="">Novo</span>
             </button>
@@ -555,7 +710,7 @@ export default function App() {
 
       {/* Modals */}
       {!userName && !user && !authLoading && <WelcomeModal onSave={setUserName} onLogin={handleLogin} />}
-      {isFormOpen && <SubscriptionForm subscription={editingSub} onSave={handleSave} onClose={() => setIsFormOpen(false)} />}
+      {isFormOpen && <SubscriptionForm subscription={editingSub} onSave={handleSave} onClose={() => setIsFormOpen(false)} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}
       
       {subToDelete && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -574,11 +729,12 @@ export default function App() {
       {disablePromptSub && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-8 max-w-sm w-full text-center">
-            <h3 className="text-xl font-bold mb-4">Desabilitar {disablePromptSub.name}</h3>
+            <h3 className="text-xl font-bold mb-4">Gerenciar {disablePromptSub.name}</h3>
             <div className="flex flex-col gap-3">
               <button onClick={() => confirmDisable('cancelled_temporary')} className="py-4 rounded-xl bg-orange-600 font-bold hover:bg-orange-700 transition-all">Pausa Temporária</button>
-              <button onClick={() => confirmDisable('cancelled_permanent')} className="py-4 rounded-xl bg-red-900/50 text-red-400 border border-red-900 font-bold hover:bg-red-900/70 transition-all">Cancelamento Permanente</button>
-              <button onClick={() => setDisablePromptSub(null)} className="py-2 text-gray-500 hover:text-white transition-colors">Voltar</button>
+              <button onClick={() => confirmDisable('cancelled_permanent')} className="py-4 rounded-xl border border-[#5A5A40] text-gray-300 font-bold hover:bg-gray-800 transition-all">Cancelamento Permanente</button>
+              <button onClick={() => { handleDelete(disablePromptSub.id); setDisablePromptSub(null); }} className="py-4 rounded-xl bg-red-900/50 text-red-400 border border-red-900 font-bold hover:bg-red-900/70 transition-all">Excluir Assinatura</button>
+              <button onClick={() => setDisablePromptSub(null)} className="py-2 mt-2 text-gray-500 hover:text-white transition-colors">Voltar</button>
             </div>
           </div>
         </div>
@@ -613,42 +769,31 @@ export default function App() {
               <button 
                 onClick={async () => {
                   if (user) {
-                     alert(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
+                     showToast(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
                      try {
-                       // 1. Fetch from Supabase
                        const { data: supaData } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
                        const supaSubs = (supaData as any[]) || [];
-                       
-                       // 2. Fetch from Firebase
                        const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
                        const snap = await getDocs(q);
                        const fireSubs: any[] = [];
                        snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
-                       
-                       // 3. Merge (Supabase overrides Firebase on ID collision)
                        const mergedMap = new Map();
                        fireSubs.forEach(s => mergedMap.set(s.id, s));
-                       supaSubs.forEach(s => mergedMap.set(s.id, s)); // Supabase wins
-                       
+                       supaSubs.forEach(s => mergedMap.set(s.id, s));
                        const merged = Array.from(mergedMap.values());
-                       
-                       // 4. Update UI & Local Storage
                        setSubscriptions(merged);
                        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
-                       
-                       // 5. Push full merged list back to both properly
                        if (merged.length > 0) {
                          supabase.from('subscriptions').upsert(merged);
-                         merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item));
+                         merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
                        }
-                       
-                       alert(language === 'pt' ? 'Sincronização Completa!' : 'Sync Complete!');
+                       showToast(language === 'pt' ? `Sincronizado! ${merged.length} itens` : `Synced! ${merged.length} items`, true);
                      } catch (err) {
                        console.error('Manual sync failed', err);
-                       alert(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error');
+                       showToast(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error', false);
                      }
                   } else {
-                     alert(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync');
+                     showToast(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync', false);
                   }
                 }} 
                 className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"
@@ -662,7 +807,14 @@ export default function App() {
       )}
 
       {/* Backdrop for click outside */}
-      {(showLangPicker || showCurrencyPicker || showProfileMenu) && <div className="fixed inset-0 z-30" onClick={() => { setShowLangPicker(false); setShowCurrencyPicker(false); setShowProfileMenu(false); }} />}
+      {(showLangPicker || showCurrencyPicker || showProfileMenu || showSettingsMenu) && <div className="fixed inset-0 z-30" onClick={() => { setShowLangPicker(false); setShowCurrencyPicker(false); setShowProfileMenu(false); setShowSettingsMenu(false); }} />}
+
+      {/* Toast notification */}
+      {toast && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-5 py-3 rounded-2xl shadow-xl text-sm font-medium flex items-center gap-2 transition-all animate-in fade-in slide-in-from-bottom-4 ${toast.ok ? 'bg-emerald-900/90 border border-emerald-700 text-emerald-200' : 'bg-gray-900/95 border border-gray-700 text-gray-300'}`}>
+          {toast.ok ? '✓' : '⚠'} {toast.msg}
+        </div>
+      )}
     </div>
   );
 }

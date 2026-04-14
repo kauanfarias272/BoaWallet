@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Language } from './i18n';
 import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
 import { supabase } from './supabase';
+import { auth as firebaseAuth } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 import { User } from '@supabase/supabase-js';
 
 export type Gender = 'M' | 'F' | 'N';
@@ -43,38 +45,78 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
 
   useEffect(() => {
-    // Initial fetch
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const currentUser = session?.user || null;
-      setUser(currentUser);
-      if (currentUser?.user_metadata?.full_name) {
-        setUserName(currentUser.user_metadata.full_name);
-      }
-      setAuthLoading(false);
-    });
+    let supaUnsub: (() => void) | null = null;
 
-    // Listen to changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      const currentUser = session?.user || null;
-      setUser(currentUser);
-      if (currentUser?.user_metadata?.full_name) {
-        setUserName(currentUser.user_metadata.full_name);
-      } else if (!currentUser) {
-        // User logged out - clear userName
-        setUserName('');
+    const tryReauthFromFirebase = async () => {
+      const fbUser = firebaseAuth.currentUser;
+      if (!fbUser) return false;
+      try {
+        console.log('[BoaWallet] Firebase active, refreshing Supabase session...');
+        const idToken = await fbUser.getIdToken(/* forceRefresh */ true);
+        const { data, error } = await supabase.auth.signInWithIdToken({
+          provider: 'google',
+          token: idToken,
+        });
+        if (error) {
+          console.warn('[BoaWallet] Supabase re-auth failed:', error.message);
+          return false;
+        }
+        if (data.user) {
+          setUser(data.user);
+          if (data.user.user_metadata?.full_name) {
+            setUserName(data.user.user_metadata.full_name);
+          }
+          console.log('[BoaWallet] Supabase session restored from Firebase.');
+          return true;
+        }
+      } catch (e) {
+        console.warn('[BoaWallet] Firebase token refresh failed:', e);
       }
-    });
+      return false;
+    };
 
-    return () => subscription.unsubscribe();
+    const init = async () => {
+      // 1. Check existing Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUser = session?.user || null;
+
+      if (currentUser) {
+        setUser(currentUser);
+        if (currentUser.user_metadata?.full_name) {
+          setUserName(currentUser.user_metadata.full_name);
+        }
+        setAuthLoading(false);
+      } else {
+        // 2. No Supabase session — wait for Firebase to initialize, then re-auth
+        const unsubFb = onAuthStateChanged(firebaseAuth, async (fbUser) => {
+          if (fbUser) {
+            await tryReauthFromFirebase();
+          }
+          setAuthLoading(false);
+          unsubFb(); // only need this once on startup
+        });
+      }
+
+      // 3. Listen to Supabase auth state for ongoing changes (login/logout)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        const currentUser = session?.user || null;
+        setUser(currentUser);
+        if (currentUser?.user_metadata?.full_name) {
+          setUserName(currentUser.user_metadata.full_name);
+        } else if (!currentUser) {
+          setUserName('');
+        }
+      });
+      supaUnsub = () => subscription.unsubscribe();
+    };
+
+    init();
+
+    return () => { supaUnsub?.(); };
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('userName', userName);
-  }, [userName]);
-
-  useEffect(() => {
-    localStorage.setItem('userGender', gender);
-  }, [gender]);
+  useEffect(() => { localStorage.setItem('userName', userName); }, [userName]);
+  useEffect(() => { localStorage.setItem('userGender', gender); }, [gender]);
 
   // Force dark mode always
   useEffect(() => {
@@ -85,29 +127,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const fetchRates = async () => {
       try {
-        // Fetch fiat rates relative to USD
         const fiatRes = await fetch('https://open.er-api.com/v6/latest/USD');
         const fiatData = await fiatRes.json();
-        
-        // Fetch BTC rate relative to USD
         const btcRes = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
         const btcData = await btcRes.json();
-        
-        if (fiatData && fiatData.rates && btcData && btcData.bitcoin) {
+
+        if (fiatData?.rates && btcData?.bitcoin) {
           const newRates: Record<Currency, number> = { ...DEFAULT_EXCHANGE_RATES };
-          
-          // Update fiat rates
           (Object.keys(newRates) as Currency[]).forEach(currency => {
             if (currency !== 'BTC' && fiatData.rates[currency]) {
               newRates[currency] = fiatData.rates[currency];
             }
           });
-          
-          // Update BTC rate (1 USD = X BTC)
           const btcPriceInUsd = btcData.bitcoin.usd;
           newRates['BTC'] = 1 / btcPriceInUsd;
           newRates['SATS'] = (1 / btcPriceInUsd) * 100000000;
-          
           setExchangeRates(newRates);
         }
       } catch (error) {
@@ -116,7 +150,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
 
     fetchRates();
-    // Refresh every 5 minutes
     const interval = setInterval(fetchRates, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
