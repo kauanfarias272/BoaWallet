@@ -515,7 +515,7 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       doc.setFontSize(20);
-      doc.text('Boa Wallet - Relatório v1.6.0', pageWidth / 2, 20, { align: 'center' });
+      doc.text('Boa Wallet - Relatório v1.7', pageWidth / 2, 20, { align: 'center' });
       
       const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
       const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
@@ -534,7 +534,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('PDF generation error', err);
-      alert(language === 'pt' ? 'Erro na exportação para PDF!' : 'PDF Export Error!');
+      showToast(language === 'pt' ? 'Erro na exportação para PDF!' : 'PDF Export Error!', false);
     }
   };
 
