@@ -15,6 +15,7 @@ import { db, auth as firebaseAuth } from './firebase';
 import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
 import { signInWithCredential, GoogleAuthProvider } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -63,6 +64,29 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
+
+  // Handle OAuth deep link callback (Android: io.boa.wallet://auth?code=...)
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const listener = CapApp.addListener('appUrlOpen', async (event) => {
+      console.log('[BoaWallet] appUrlOpen:', event.url);
+      if (event.url.startsWith('io.boa.wallet://auth')) {
+        try {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(event.url);
+          if (error) {
+            console.error('[BoaWallet] OAuth code exchange failed:', error.message);
+            showToast('Login falhou: ' + error.message, false);
+          } else if (data.session) {
+            console.log('[BoaWallet] OAuth session established!', data.session.user.email);
+            showToast('Login realizado com sucesso!', true);
+          }
+        } catch (e: any) {
+          console.error('[BoaWallet] appUrlOpen error:', e);
+        }
+      }
+    });
+    return () => { listener.then(l => l.remove()); };
+  }, []);
 
   const handleSecretClick = () => {
     const newCount = secretClickCount + 1;
@@ -268,68 +292,63 @@ export default function App() {
   const handleLogin = async () => {
     try {
       if (Capacitor.isNativePlatform()) {
+        // Step 1: Try Firebase native Google sign-in (fastest, no browser redirect)
+        let idToken: string | null = null;
         try {
-          console.log('[BoaWallet] Starting native sign-in...');
+          console.log('[BoaWallet] Trying Firebase native sign-in...');
           const result = await FirebaseAuthentication.signInWithGoogle();
-          const idToken = result.credential?.idToken;
-          
-          if (idToken) {
-            console.log('[BoaWallet] Native sign-in success, sending token to backend...');
-            
-            // Sync session to Firebase Web SDK to satisfy Firestore rules
-            try {
-              const credential = GoogleAuthProvider.credential(idToken);
-              await signInWithCredential(firebaseAuth, credential);
-              console.log('[BoaWallet] Firebase session established.');
-            } catch (fbErr) {
-              console.warn('[BoaWallet] Failed to sync Firebase auth, Firestore rules may fail', fbErr);
-            }
-
-            // Sync session to Supabase
-            const { error } = await supabase.auth.signInWithIdToken({ 
-              provider: 'google', 
-              token: idToken 
-            });
-            if (error) throw error;
-            console.log('[BoaWallet] Supabase session established.');
-            return;
-          } else {
-            throw new Error('No idToken received from native sign-in.');
-          }
-        } catch (nativeError: any) {
-          console.warn('[BoaWallet] Native sign-in failed, checking fallback...', nativeError);
-          
-          // Browser fallback - IMPORTANT: Redirect flow depends on having 'Client Secret' in Supabase
-          // If the user gets 400 'missing OAuth secret', it's because Supabase provider is not configured with secret.
-          const { error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: { 
-              redirectTo: 'io.boa.wallet://auth', 
-              skipBrowserRedirect: false 
-            }
-          });
-          if (error) {
-            if (error.message.includes('OAuth secret')) {
-              alert(language === 'pt' 
-                ? 'Atenção: O login via navegador não está configurado no painel Supabase (Falta o OAuth Secret). Por favor, use o Google Play Services ou atualize sua configuração.' 
-                : 'Warning: Browser login is not configured in Supabase (OAuth Secret missing). Please use Google Play Services or update your dashboard.');
-            } else {
-              throw error;
-            }
-          }
-          return;
+          idToken = result.credential?.idToken || null;
+        } catch (fbErr: any) {
+          console.warn('[BoaWallet] Firebase native sign-in unavailable, will use browser OAuth:', fbErr.message);
         }
+
+        if (idToken) {
+          // Firebase worked — use idToken to create Supabase session
+          console.log('[BoaWallet] Firebase token received, authenticating with Supabase...');
+
+          // Also sync to Firebase Web SDK (for Firestore writes)
+          try {
+            const credential = GoogleAuthProvider.credential(idToken);
+            await signInWithCredential(firebaseAuth, credential);
+          } catch (fbSyncErr) {
+            console.warn('[BoaWallet] Firebase web SDK sync failed (non-critical):', fbSyncErr);
+          }
+
+          const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+          if (error) {
+            console.warn('[BoaWallet] signInWithIdToken failed, falling back to browser OAuth:', error.message);
+            // Fall through to browser OAuth below
+            idToken = null;
+          } else {
+            console.log('[BoaWallet] Supabase session established via Firebase token.');
+            showToast('Login realizado!', true);
+            return;
+          }
+        }
+
+        // Step 2: Browser-based OAuth fallback (handles the deep link via appUrlOpen)
+        console.log('[BoaWallet] Opening browser for Supabase OAuth...');
+        showToast(language === 'pt' ? 'Abrindo login no navegador...' : 'Opening browser login...', true);
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: 'io.boa.wallet://auth',
+            skipBrowserRedirect: false,
+          },
+        });
+        if (error) throw error;
+
       } else {
-        // Web Platform
-        const { error } = await supabase.auth.signInWithOAuth({ 
-          provider: 'google', 
-          options: { redirectTo: window.location.origin } 
+        // Web platform
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: { redirectTo: window.location.origin },
         });
         if (error) throw error;
       }
     } catch (error: any) {
-      console.error('[BoaWallet] Fatal login error', error);
-      alert(language === 'pt' ? 'Erro crítico de login: ' + error.message : 'Critical login error: ' + error.message);
+      console.error('[BoaWallet] Login error:', error);
+      showToast(language === 'pt' ? 'Erro no login: ' + error.message : 'Login error: ' + error.message, false);
     }
   };
 
@@ -766,36 +785,50 @@ export default function App() {
                 <Upload size={20} className="text-[#d0d0a0]" /> Importar JSON
                 <input type="file" onChange={importJSON} className="hidden" />
               </label>
-              <button 
+              <button
                 onClick={async () => {
-                  if (user) {
-                     showToast(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
-                     try {
-                       const { data: supaData } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
-                       const supaSubs = (supaData as any[]) || [];
-                       const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
-                       const snap = await getDocs(q);
-                       const fireSubs: any[] = [];
-                       snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
-                       const mergedMap = new Map();
-                       fireSubs.forEach(s => mergedMap.set(s.id, s));
-                       supaSubs.forEach(s => mergedMap.set(s.id, s));
-                       const merged = Array.from(mergedMap.values());
-                       setSubscriptions(merged);
-                       localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
-                       if (merged.length > 0) {
-                         supabase.from('subscriptions').upsert(merged);
-                         merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
-                       }
-                       showToast(language === 'pt' ? `Sincronizado! ${merged.length} itens` : `Synced! ${merged.length} items`, true);
-                     } catch (err) {
-                       console.error('Manual sync failed', err);
-                       showToast(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error', false);
-                     }
-                  } else {
-                     showToast(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync', false);
+                  if (!user) {
+                    showToast(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync', false);
+                    return;
                   }
-                }} 
+                  showToast(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
+                  try {
+                    // Refresh session first to avoid stale-token errors
+                    await supabase.auth.refreshSession();
+
+                    const { data: supaData, error: supaErr } = await supabase
+                      .from('subscriptions').select('*').eq('user_id', user.id);
+
+                    if (supaErr) throw supaErr;
+
+                    const supaSubs = (supaData as any[]) || [];
+                    // Firebase fetch (secondary, silent)
+                    let fireSubs: any[] = [];
+                    try {
+                      const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
+                      const snap = await getDocs(q);
+                      snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
+                    } catch { /* silent */ }
+
+                    const mergedMap = new Map();
+                    fireSubs.forEach(s => mergedMap.set(s.id, s));
+                    supaSubs.forEach(s => mergedMap.set(s.id, s)); // Supabase wins
+                    const merged = Array.from(mergedMap.values()).map(normalizeSubscription);
+
+                    setSubscriptions(merged);
+                    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
+
+                    if (merged.length > 0) {
+                      const rows = merged.map(s => toSupabaseRow(s, user.id));
+                      await supabase.from('subscriptions').upsert(rows);
+                      merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
+                    }
+                    showToast(language === 'pt' ? `Sincronizado! ${merged.length} itens` : `Synced! ${merged.length} items`, true);
+                  } catch (err: any) {
+                    console.error('Manual sync failed', err);
+                    showToast(language === 'pt' ? 'Erro: ' + err.message : 'Error: ' + err.message, false);
+                  }
+                }}
                 className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"
               >
                 <Database size={20} className="text-emerald-500" /> Sincronizar Nuvem
