@@ -3,144 +3,39 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================
-    // Assumed Data Model
+    // Boa Wallet — Permissive rules for authenticated owners.
+    // Each user can only read/write their OWN data under /users/{uid}/...
+    // Any nested subcollection (subscriptions, adjustments, etc.) is
+    // allowed, provided the authenticated UID matches the document path.
     // ===============================================================
-    //
-    // Collection: users
-    // Document ID: {userId}
-    // Fields:
-    //   - uid: string (required, immutable)
-    //   - email: string (required, immutable)
-    //   - name: string (optional)
-    //   - language: string (optional)
-    //   - baseCurrency: string (optional)
-    //   - createdAt: timestamp (required, immutable)
-    //
-    // Collection: users/{userId}/subscriptions
-    // Document ID: {subscriptionId}
-    // Fields:
-    //   - id: string (required, immutable)
-    //   - userId: string (required, immutable)
-    //   - name: string (required)
-    //   - type: string (required, 'Subscription' or 'FixedExpense')
-    //   - category: string (required)
-    //   - costAmount: number (required)
-    //   - costCurrency: string (required)
-    //   - billingCycle: string (required, 'Monthly' or 'Yearly')
-    //   - dueDate: number (required)
-    //   - paymentMethod: string (required)
-    //   - paymentSource: string (required)
-    //   - emoji: string (optional)
-    //   - logoUrl: string (optional)
-    //   - bankLogoUrl: string (optional)
-    //   - hasCashback: boolean (optional)
-    //   - cashbackPercentage: number (optional)
-    //   - hasIncome: boolean (optional)
-    //   - incomeAmount: number (optional)
-    //   - incomeCurrency: string (optional)
-    //   - incomeFrequency: string (optional)
-    //   - incomeDescription: string (optional)
-    //   - subItems: list (optional)
-    //   - createdAt: timestamp (required, immutable)
-    //   - updatedAt: timestamp (optional)
-    //
-    // ===============================================================
-
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    function isAuthenticated() {
-      return request.auth != null;
-    }
 
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return request.auth != null && request.auth.uid == userId;
     }
 
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
-
-    function isValidEmail(email) {
-      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
-    }
-
-    function uidUnchanged() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
-    }
-
-    function uidNotModified() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
-    }
-
-    function areImmutableFieldsUnchanged(fields) {
-      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
-    }
-
-    // ===============================================================
-    // Domain Validators
-    // ===============================================================
-    function isValidUser(data) {
-      return data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
-             data.email is string && isValidEmail(data.email) && data.email.size() < 150 &&
-             (!('name' in data) || (data.name is string && data.name.size() < 100)) &&
-             (!('language' in data) || (data.language is string && data.language.size() < 10)) &&
-             (!('baseCurrency' in data) || (data.baseCurrency is string && data.baseCurrency.size() < 10)) &&
-             data.createdAt is timestamp;
-    }
-
-    function isValidSubscription(data) {
-      return data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
-             data.userId is string && data.userId == request.auth.uid &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.type in ['Subscription', 'FixedExpense'] &&
-             data.category is string && data.category.size() > 0 && data.category.size() < 50 &&
-             data.costAmount is number && data.costAmount >= 0 &&
-             data.costCurrency is string && data.costCurrency.size() > 0 && data.costCurrency.size() < 10 &&
-             data.billingCycle in ['Monthly', 'Yearly'] &&
-             data.dueDate is number && data.dueDate >= 1 && data.dueDate <= 31 &&
-             data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() < 50 &&
-             data.paymentSource is string && data.paymentSource.size() > 0 && data.paymentSource.size() < 100 &&
-             (!('emoji' in data) || (data.emoji is string && data.emoji.size() < 10)) &&
-             (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() < 500)) &&
-             (!('bankLogoUrl' in data) || (data.bankLogoUrl is string && data.bankLogoUrl.size() < 500)) &&
-             (!('hasCashback' in data) || data.hasCashback is bool) &&
-             (!('cashbackPercentage' in data) || (data.cashbackPercentage is number && data.cashbackPercentage >= 0 && data.cashbackPercentage <= 100)) &&
-             (!('hasIncome' in data) || data.hasIncome is bool) &&
-             (!('incomeAmount' in data) || (data.incomeAmount is number && data.incomeAmount >= 0)) &&
-             (!('incomeCurrency' in data) || (data.incomeCurrency is string && data.incomeCurrency.size() < 10)) &&
-             (!('incomeFrequency' in data) || data.incomeFrequency in ['Monthly', 'Yearly']) &&
-             (!('incomeDescription' in data) || (data.incomeDescription is string && data.incomeDescription.size() < 200)) &&
-             (!('subItems' in data) || (data.subItems is list && data.subItems.size() <= 50)) &&
-             data.createdAt is timestamp &&
-             (!('updatedAt' in data) || data.updatedAt is timestamp);
-    }
-
-    // ===============================================================
-    // Rules
-    // ===============================================================
     match /users/{userId} {
-      allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && 
-                    hasRequiredFields(['uid', 'email', 'createdAt']) && 
-                    isValidUser(request.resource.data) && 
-                    uidUnchanged();
-      allow update: if isOwner(userId) && 
-                    isValidUser(request.resource.data) && 
-                    uidNotModified() &&
-                    areImmutableFieldsUnchanged(['createdAt', 'email']);
-      allow delete: if isOwner(userId);
+      allow read, write: if isOwner(userId);
 
-      match /subscriptions/{subscriptionId} {
-        allow read: if isOwner(userId);
-        allow create: if isOwner(userId) && 
-                      hasRequiredFields(['id', 'userId', 'name', 'type', 'category', 'costAmount', 'costCurrency', 'billingCycle', 'dueDate', 'paymentMethod', 'paymentSource', 'createdAt']) && 
-                      isValidSubscription(request.resource.data);
-        allow update: if isOwner(userId) && 
-                      isValidSubscription(request.resource.data) &&
-                      areImmutableFieldsUnchanged(['id', 'userId', 'createdAt']);
-        allow delete: if isOwner(userId);
+      // Any subcollection the app creates under the user's document
+      // (subscriptions, adjustments, settings, exports, etc.)
+      match /{collection}/{docId} {
+        allow read, write: if isOwner(userId);
       }
+
+      // Deeper nesting if ever needed.
+      match /{collection}/{docId}/{sub=**} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Legacy flat collection (pre-v1.7). Authenticated users may read/write
+    // documents where the `user_id` field matches their UID. This lets the
+    // app migrate old data to the new nested structure without permission
+    // errors during the transition.
+    match /subscriptions/{subId} {
+      allow read, write: if request.auth != null &&
+                           (!(resource != null) || resource.data.user_id == request.auth.uid) &&
+                           (!(request.resource != null) || request.resource.data.user_id == request.auth.uid);
     }
   }
 }

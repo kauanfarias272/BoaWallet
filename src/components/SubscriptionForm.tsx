@@ -529,10 +529,45 @@ export function SubscriptionForm({ subscription, onSave, onClose }: Subscription
             <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider">{t('form.subItems')}</h3>
             <p className="text-xs text-gray-500">{t('form.subItemsDesc')}</p>
             {(formData.subItems || []).map(item => (
-              <div key={item.id} className="flex items-center gap-2">
-                <input type="text" placeholder={t('form.name')} value={item.name} onChange={e => handleSubItemChange(item.id, 'name', e.target.value)} className={`${inputClass} flex-1`} />
-                <input type="number" step="0.01" value={item.costAmount} onChange={e => handleSubItemChange(item.id, 'costAmount', parseFloat(e.target.value) || 0)} className={`${inputClass} w-28`} />
-                <button type="button" onClick={() => handleRemoveSubItem(item.id)} className="p-2 text-gray-400 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+              <div key={item.id} className="bg-[#121212] border border-gray-800 rounded-xl p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] uppercase tracking-widest text-gray-500 w-12 shrink-0">{t('form.name')}</label>
+                  <input
+                    type="text"
+                    placeholder={language === 'pt' ? 'Ex: Perfil extra' : 'Ex: Extra profile'}
+                    value={item.name}
+                    onChange={e => handleSubItemChange(item.id, 'name', e.target.value)}
+                    className="flex-1 px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:ring-2 focus:ring-[#5A5A40] outline-none min-w-0"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveSubItem(item.id)}
+                    className="p-2 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                    aria-label={language === 'pt' ? 'Remover' : 'Remove'}
+                  >
+                    <Trash2 size={16}/>
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] uppercase tracking-widest text-gray-500 w-12 shrink-0">{t('form.amount')}</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={item.costAmount === 0 ? '' : String(item.costAmount)}
+                    onFocus={handleFocus}
+                    onChange={e => {
+                      const v = e.target.value.replace(',', '.');
+                      if (v === '' || v === '-') {
+                        handleSubItemChange(item.id, 'costAmount', 0);
+                        return;
+                      }
+                      const parsed = parseFloat(v);
+                      if (!Number.isNaN(parsed)) handleSubItemChange(item.id, 'costAmount', parsed);
+                    }}
+                    className="flex-1 px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:ring-2 focus:ring-[#5A5A40] outline-none min-w-0"
+                  />
+                </div>
               </div>
             ))}
             <button type="button" onClick={handleAddSubItem} className="flex items-center gap-1 text-xs font-medium text-[#d0d0a0] hover:text-[#e0e0b0]">

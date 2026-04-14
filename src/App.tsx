@@ -11,8 +11,15 @@ import { Plus, AlertTriangle, LogIn, LogOut, Download, Upload, FileText, Moon, S
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
-import { db } from './firebase';
-import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import {
+  saveSubscription as cloudSaveSubscription,
+  deleteSubscription as cloudDeleteSubscription,
+  saveAdjustment as cloudSaveAdjustment,
+  deleteAdjustment as cloudDeleteAdjustment,
+  pullAll,
+  pushAll,
+  migrateLegacyFlatSubscriptions,
+} from './lib/cloudSync';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
@@ -122,49 +129,53 @@ export default function App() {
     const newAdj: Adjustment = { ...adjData, id: Date.now().toString() };
     const updated = [...adjustments, newAdj];
     setAdjustments(updated);
-    
+    localStorage.setItem('boa_adjustments', JSON.stringify(updated));
+
     if (user) {
       try {
-        await supabase.from('adjustments').upsert({ ...newAdj, user_id: user.id });
+        await cloudSaveAdjustment(user.id, newAdj);
       } catch (error) {
         console.error('Error adding adjustment:', error);
       }
-    } else {
-      localStorage.setItem('boa_adjustments', JSON.stringify(updated));
     }
   };
 
   const handleRemoveAdjustment = async (id: string) => {
     const updated = adjustments.filter(a => a.id !== id);
     setAdjustments(updated);
-    
+    localStorage.setItem('boa_adjustments', JSON.stringify(updated));
+
     if (user) {
       try {
-        await supabase.from('adjustments').delete().eq('id', id).eq('user_id', user.id);
+        await cloudDeleteAdjustment(user.id, id);
       } catch (error) {
         console.error('Error removing adjustment:', error);
       }
-    } else {
-      localStorage.setItem('boa_adjustments', JSON.stringify(updated));
     }
   };
 
-  // --- Synchronization ---
+  // --- Synchronization: mirror the user profile (best-effort). ---
   useEffect(() => {
-    if (user) {
-      supabase.from('users').upsert({
-        id: user.id, email: user.email,
-        name: user.user_metadata?.full_name || userName,
-        language, base_currency: baseCurrency,
-        updated_at: new Date().toISOString()
-      });
-    }
+    if (!user) return;
+    (async () => {
+      try {
+        const { error } = await supabase.from('users').upsert({
+          id: user.id,
+          email: user.email,
+          name: user.user_metadata?.full_name || userName,
+          language,
+          base_currency: baseCurrency,
+          updated_at: new Date().toISOString(),
+        });
+        if (error) console.warn('[BoaWallet] user profile mirror failed:', error.message);
+      } catch (e) { console.warn('[BoaWallet] user profile mirror threw:', e); }
+    })();
   }, [user, language, baseCurrency, userName]);
 
   useEffect(() => {
     if (!user) {
-      try { 
-        const s = localStorage.getItem('subscriptions'); if (s) setSubscriptions(JSON.parse(s)); 
+      try {
+        const s = localStorage.getItem('subscriptions'); if (s) setSubscriptions(JSON.parse(s));
         const a = localStorage.getItem('boa_adjustments'); if (a) setAdjustments(JSON.parse(a));
       } catch {}
       return;
@@ -173,68 +184,55 @@ export default function App() {
     const fetchInitialData = async () => {
       if (!user) return;
       console.log('[BoaWallet] Syncing data from cloud...');
-      
-      try {
-        // 1. Fetch from Supabase (Primary)
-        const { data: subs, error: subsError } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
-        
-        if (subs && subs.length > 0) {
-          console.log('[BoaWallet] Found Supabase match:', subs.length);
-          
-          // Merge local subscriptions that might have been created while logged out
-          try {
-             const localSubsRaw = localStorage.getItem('subscriptions');
-             if (localSubsRaw) {
-               const localSubs = JSON.parse(localSubsRaw);
-               if (Array.isArray(localSubs) && localSubs.length > 0) {
-                 const newSubs = localSubs.filter(ls => !subs.some(s => s.id === ls.id));
-                 if (newSubs.length > 0) {
-                    console.log('[BoaWallet] Merging local subscriptions:', newSubs.length);
-                    const toUpload = newSubs.map(s => ({ ...s, user_id: user.id }));
-                    await supabase.from('subscriptions').upsert(toUpload);
-                    subs.push(...toUpload);
-                 }
-               }
-             }
-          } catch(e) {}
 
-          setSubscriptions(subs as any[]);
-          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subs));
-        } else if (!subsError) {
-          console.log('[BoaWallet] Supabase empty, checking Firebase migration...');
-          // 2. Try Firebase Migration (Secondary/Old)
-          try {
-            const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
-            const querySnapshot = await getDocs(q);
-            const fireSubs: any[] = [];
-            querySnapshot.forEach((doc) => { fireSubs.push({ ...doc.data(), id: doc.id }); });
-            
-            if (fireSubs.length > 0) {
-              console.log('[BoaWallet] Found Firebase data, migrating:', fireSubs.length);
-              setSubscriptions(fireSubs);
-              // Migrate to Supabase
-              for (const sub of fireSubs) { 
-                await supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }); 
-              }
-            } else {
-              // 3. Last resort: LocalStorage
-              const cachedSubs = localStorage.getItem('subscriptions_' + user.id) || localStorage.getItem('subscriptions');
-              if (cachedSubs) {
-                const parsed = JSON.parse(cachedSubs);
-                if (Array.isArray(parsed)) {
-                   console.log('[BoaWallet] Restoring from local cache:', parsed.length);
-                   setSubscriptions(parsed);
-                }
+      try {
+        // 1. Pull from both Firebase (primary) + Supabase (mirror), merged.
+        const pulled = await pullAll(user.id);
+        let subs = pulled.subscriptions;
+        let adjs = pulled.adjustments;
+
+        // 2. Migrate legacy flat Firestore collection once.
+        if (subs.length === 0) {
+          const legacy = await migrateLegacyFlatSubscriptions(user.id);
+          if (legacy.length > 0) {
+            console.log('[BoaWallet] Migrating legacy flat subs:', legacy.length);
+            await pushAll(user.id, legacy, []);
+            subs = legacy;
+          }
+        }
+
+        // 3. Merge unsynced local entries into the cloud.
+        try {
+          const localRaw = localStorage.getItem('subscriptions_' + user.id) || localStorage.getItem('subscriptions');
+          if (localRaw) {
+            const localSubs = JSON.parse(localRaw);
+            if (Array.isArray(localSubs) && localSubs.length > 0) {
+              const missing = localSubs.filter((ls: any) => ls?.id && !subs.some(s => s.id === ls.id));
+              if (missing.length > 0) {
+                console.log('[BoaWallet] Pushing unsynced local subs:', missing.length);
+                await pushAll(user.id, missing, []);
+                subs = [...subs, ...missing];
               }
             }
-          } catch (err) { console.error('Firebase pull failed', err); }
-        }
+          }
+          const localAdjRaw = localStorage.getItem('boa_adjustments');
+          if (localAdjRaw) {
+            const localAdjs = JSON.parse(localAdjRaw);
+            if (Array.isArray(localAdjs) && localAdjs.length > 0) {
+              const missing = localAdjs.filter((la: any) => la?.id && !adjs.some(a => a.id === la.id));
+              if (missing.length > 0) {
+                await pushAll(user.id, [], missing);
+                adjs = [...adjs, ...missing];
+              }
+            }
+          }
+        } catch (e) { console.warn('Local merge failed', e); }
 
-        const { data: adjs, error: adjsError } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
-        if (adjs && adjs.length > 0) {
-          setAdjustments(adjs as any[]);
-          localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjs));
-        }
+        // 4. Commit to UI + cache.
+        setSubscriptions(subs);
+        setAdjustments(adjs);
+        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subs));
+        localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjs));
       } catch (err) {
         console.error('[BoaWallet] Sync failed', err);
       }
@@ -242,10 +240,10 @@ export default function App() {
 
     fetchInitialData();
 
-    const subsSubscription = supabase.channel('subs_v15_' + user.id)
+    // Supabase realtime (best effort — ignore errors if table schema differs).
+    const subsSubscription = supabase.channel('subs_v17_' + user.id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions', filter: `user_id=eq.${user.id}` }, fetchInitialData).subscribe();
-
-    const adjsSubscription = supabase.channel('adjs_v15_' + user.id)
+    const adjsSubscription = supabase.channel('adjs_v17_' + user.id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'adjustments', filter: `user_id=eq.${user.id}` }, fetchInitialData).subscribe();
 
     return () => {
@@ -326,38 +324,60 @@ export default function App() {
   };
 
   const handleSave = async (sub: Subscription) => {
+    const isNew = !subscriptions.find(s => s.id === sub.id);
+    const nowIso = new Date().toISOString();
+    const fullSub: Subscription = {
+      ...sub,
+      createdAt: isNew ? (Date.now()) : (sub.createdAt ?? Date.now()),
+      // Tag updatedAt via spread so jsonb fallback preserves it; kept as any-cast.
+    } as Subscription;
+    (fullSub as any).updatedAt = nowIso;
+
+    // Optimistic local update always.
+    setSubscriptions(prev =>
+      prev.find(s => s.id === fullSub.id)
+        ? prev.map(s => (s.id === fullSub.id ? fullSub : s))
+        : [...prev, fullSub]
+    );
+
     if (user) {
       try {
-        const isNew = !subscriptions.find(s => s.id === sub.id);
-        const fullSub = {
-          ...sub,
-          user_id: user.id,
-          createdAt: isNew ? new Date().toISOString() : sub.createdAt,
-          updatedAt: new Date().toISOString()
-        };
-        // Optimistic
-        if (isNew) setSubscriptions(s => [...s, fullSub as any]);
-        else setSubscriptions(s => s.map(x => x.id === sub.id ? (fullSub as any) : x));
-
-        // Dual Write to both databases for maximum availability
-        const supaPromise = supabase.from('subscriptions').upsert(fullSub);
-        const firePromise = setDoc(doc(db, 'subscriptions', fullSub.id), fullSub);
-        await Promise.allSettled([supaPromise, firePromise]);
-      } catch (error) { console.error('Save error', error); }
+        await cloudSaveSubscription(user.id, fullSub);
+      } catch (error) {
+        console.error('Save error', error);
+        alert(language === 'pt' ? 'Erro ao salvar na nuvem, mas os dados estão salvos localmente.' : 'Could not save to cloud, but data is saved locally.');
+      }
+      // Always refresh the local cache.
+      const next = subscriptions.find(s => s.id === fullSub.id)
+        ? subscriptions.map(s => (s.id === fullSub.id ? fullSub : s))
+        : [...subscriptions, fullSub];
+      localStorage.setItem('subscriptions_' + user.id, JSON.stringify(next));
     } else {
-      setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]);
+      const next = subscriptions.find(s => s.id === fullSub.id)
+        ? subscriptions.map(s => (s.id === fullSub.id ? fullSub : s))
+        : [...subscriptions, fullSub];
+      localStorage.setItem('subscriptions', JSON.stringify(next));
     }
+
     setIsFormOpen(false);
     setEditingSub(undefined);
   };
 
   const handleDelete = async (id: string) => {
+    // Optimistic local delete regardless of auth.
+    setSubscriptions(prev => prev.filter(s => s.id !== id));
     if (user) {
-      const supaPromise = supabase.from('subscriptions').delete().eq('id', id).eq('user_id', user.id);
-      const firePromise = deleteDoc(doc(db, 'subscriptions', id));
-      await Promise.allSettled([supaPromise, firePromise]);
+      try {
+        await cloudDeleteSubscription(user.id, id);
+        const next = subscriptions.filter(s => s.id !== id);
+        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(next));
+      } catch (err) {
+        console.error('Delete error', err);
+        alert(language === 'pt' ? 'Erro ao excluir na nuvem, mas foi removido localmente.' : 'Could not delete from cloud, but removed locally.');
+      }
     } else {
-      setSubscriptions(subs => subs.filter(s => s.id !== id));
+      const next = subscriptions.filter(s => s.id !== id);
+      localStorage.setItem('subscriptions', JSON.stringify(next));
     }
     setSubToDelete(null);
   };
@@ -366,20 +386,80 @@ export default function App() {
   const openNew  = () => { setEditingSub(undefined); setIsFormOpen(true); };
 
   // --- Export/Import ---
-  const exportPDF = () => {
+  // jsPDF's default fonts only support Latin-1; emojis and other unicode glyphs
+  // throw "WinAnsi encoding" errors. Strip them before rendering.
+  const sanitizeForPdf = (text: string): string => {
+    if (text == null) return '';
+    const s = String(text);
+    // Remove emoji ranges + any char outside printable ASCII / Latin-1.
+    return s
+      .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+      .replace(/[\u{2600}-\u{27BF}]/gu, '')
+      .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '')
+      .trim();
+  };
+
+  const exportPDF = async () => {
     try {
-      const doc = new jsPDF();
-      const pageWidth = doc.internal.pageSize.width;
-      doc.setFontSize(20);
-      doc.text('Boa Wallet - Relatório v1.6.0', pageWidth / 2, 20, { align: 'center' });
-      
+      const pdf = new jsPDF();
+      const pageWidth = pdf.internal.pageSize.width;
+      pdf.setFontSize(18);
+      pdf.text('Boa Wallet - Relatorio v1.7.0', pageWidth / 2, 20, { align: 'center' });
+      pdf.setFontSize(10);
+      pdf.text(new Date().toLocaleString(), pageWidth / 2, 27, { align: 'center' });
+
       const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
-      const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
-      autoTable(doc, { head: [['Nome', 'Categoria', 'Custo']], body: data, startY: 30 });
-      doc.save('boa-wallet-report.pdf');
+      const disabled = subscriptions.filter(s => s.status?.startsWith('cancelled'));
+
+      const body = activeSubs.map(s => [
+        sanitizeForPdf(s.name),
+        sanitizeForPdf(s.category),
+        sanitizeForPdf(s.billingCycle === 'Yearly' ? 'Anual' : 'Mensal'),
+        String(s.dueDate ?? ''),
+        sanitizeForPdf(s.paymentSource || ''),
+        formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency),
+      ]);
+      autoTable(pdf, {
+        head: [['Nome', 'Categoria', 'Ciclo', 'Dia', 'Origem', 'Custo']],
+        body,
+        startY: 34,
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [90, 90, 64] },
+      });
+
+      if (disabled.length > 0) {
+        const y = (pdf as any).lastAutoTable?.finalY ?? 34;
+        pdf.setFontSize(12);
+        pdf.text('Desabilitadas', 14, y + 12);
+        autoTable(pdf, {
+          head: [['Nome', 'Categoria', 'Status', 'Custo']],
+          body: disabled.map(s => [
+            sanitizeForPdf(s.name),
+            sanitizeForPdf(s.category),
+            s.status === 'cancelled_permanent' ? 'Cancelada' : 'Pausada',
+            formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency),
+          ]),
+          startY: y + 16,
+          styles: { fontSize: 9 },
+          headStyles: { fillColor: [120, 60, 60] },
+        });
+      }
+
+      // Export: on web trigger download; on native write to filesystem and share.
+      if (Capacitor.isNativePlatform()) {
+        const base64 = pdf.output('datauristring').split(',')[1];
+        const res = await Filesystem.writeFile({
+          path: 'boa-wallet-report.pdf',
+          data: base64,
+          directory: Directory.Documents,
+        });
+        await Share.share({ title: 'Boa Wallet Report', url: res.uri });
+      } else {
+        pdf.save('boa-wallet-report.pdf');
+      }
     } catch (err: any) {
       console.error('PDF generation error', err);
-      alert(language === 'pt' ? 'Erro na exportação para PDF!' : 'PDF Export Error!');
+      alert((language === 'pt' ? 'Erro na exportação para PDF: ' : 'PDF Export Error: ') + (err?.message || err));
     }
   };
 
@@ -405,7 +485,7 @@ export default function App() {
         const data = JSON.parse(content);
         
         if (data.subscriptions && Array.isArray(data.subscriptions)) {
-          const normalized = data.subscriptions.map((s: any) => ({
+          const normalized: Subscription[] = data.subscriptions.map((s: any) => ({
              ...s,
              id: s.id || Date.now().toString() + Math.random(),
              sharedWith: (s.sharedWith || []).map((m: any) => ({
@@ -416,24 +496,22 @@ export default function App() {
                 info: m.info || ''
              }))
           }));
-          
+          const normalizedAdjs: Adjustment[] = Array.isArray(data.adjustments) ? data.adjustments : [];
+
           setSubscriptions(normalized);
+          if (normalizedAdjs.length > 0) setAdjustments(normalizedAdjs);
           localStorage.setItem('subscriptions', JSON.stringify(normalized));
-          
+          localStorage.setItem('boa_adjustments', JSON.stringify(normalizedAdjs));
+
           if (user) {
             console.log('[BoaWallet] Syncing imported data to Cloud...');
-            const toUpload = normalized.map((s: any) => ({ ...s, user_id: user.id }));
-            
-            // Push to Supabase
-            const supaPromise = supabase.from('subscriptions').upsert(toUpload);
-            
-            // Push to Firebase (one by one as setDoc)
-            const firePromises = toUpload.map((item: any) => setDoc(doc(db, 'subscriptions', item.id), item));
-            
-            const [supaRes] = await Promise.allSettled([supaPromise, ...firePromises]);
-            if (supaRes.status === 'rejected') console.error('Cloud sync error:', supaRes.reason);
-            
-            localStorage.setItem('subscriptions_' + user.id, JSON.stringify(toUpload));
+            try {
+              await pushAll(user.id, normalized, normalizedAdjs);
+              localStorage.setItem('subscriptions_' + user.id, JSON.stringify(normalized));
+              localStorage.setItem('adjustments_' + user.id, JSON.stringify(normalizedAdjs));
+            } catch (e) {
+              console.error('Cloud import sync failed', e);
+            }
           }
           alert(language === 'pt' ? 'Importação concluída com sucesso!' : 'Import successful!');
         } else {
@@ -610,47 +688,42 @@ export default function App() {
                 <Upload size={20} className="text-[#d0d0a0]" /> Importar JSON
                 <input type="file" onChange={importJSON} className="hidden" />
               </label>
-              <button 
+              <button
                 onClick={async () => {
-                  if (user) {
-                     alert(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
-                     try {
-                       // 1. Fetch from Supabase
-                       const { data: supaData } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
-                       const supaSubs = (supaData as any[]) || [];
-                       
-                       // 2. Fetch from Firebase
-                       const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
-                       const snap = await getDocs(q);
-                       const fireSubs: any[] = [];
-                       snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
-                       
-                       // 3. Merge (Supabase overrides Firebase on ID collision)
-                       const mergedMap = new Map();
-                       fireSubs.forEach(s => mergedMap.set(s.id, s));
-                       supaSubs.forEach(s => mergedMap.set(s.id, s)); // Supabase wins
-                       
-                       const merged = Array.from(mergedMap.values());
-                       
-                       // 4. Update UI & Local Storage
-                       setSubscriptions(merged);
-                       localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
-                       
-                       // 5. Push full merged list back to both properly
-                       if (merged.length > 0) {
-                         supabase.from('subscriptions').upsert(merged);
-                         merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item));
-                       }
-                       
-                       alert(language === 'pt' ? 'Sincronização Completa!' : 'Sync Complete!');
-                     } catch (err) {
-                       console.error('Manual sync failed', err);
-                       alert(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error');
-                     }
-                  } else {
-                     alert(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync');
+                  if (!user) {
+                    alert(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync');
+                    return;
                   }
-                }} 
+                  try {
+                    // 1. Pull both sources, merge.
+                    const pulled = await pullAll(user.id);
+
+                    // 2. Merge with current in-memory state so local edits aren't lost.
+                    const mergedSubs = new Map<string, Subscription>();
+                    pulled.subscriptions.forEach(s => mergedSubs.set(s.id, s));
+                    subscriptions.forEach(s => mergedSubs.set(s.id, s)); // local wins
+                    const mergedAdjs = new Map<string, Adjustment>();
+                    pulled.adjustments.forEach(a => mergedAdjs.set(a.id, a));
+                    adjustments.forEach(a => mergedAdjs.set(a.id, a));
+
+                    const finalSubs = Array.from(mergedSubs.values());
+                    const finalAdjs = Array.from(mergedAdjs.values());
+
+                    // 3. Push the merged set back to BOTH stores.
+                    await pushAll(user.id, finalSubs, finalAdjs);
+
+                    // 4. Refresh UI + cache.
+                    setSubscriptions(finalSubs);
+                    setAdjustments(finalAdjs);
+                    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(finalSubs));
+                    localStorage.setItem('adjustments_' + user.id, JSON.stringify(finalAdjs));
+
+                    alert(language === 'pt' ? 'Sincronização completa!' : 'Sync complete!');
+                  } catch (err) {
+                    console.error('Manual sync failed', err);
+                    alert(language === 'pt' ? 'Erro ao sincronizar' : 'Sync error');
+                  }
+                }}
                 className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"
               >
                 <Database size={20} className="text-emerald-500" /> Sincronizar Nuvem
