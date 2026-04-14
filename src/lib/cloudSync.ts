@@ -22,6 +22,8 @@ import {
   getDocs,
   setDoc,
   deleteDoc,
+  query,
+  where,
 } from 'firebase/firestore';
 import { supabase } from '../supabase';
 import { Subscription, Adjustment } from '../types';
@@ -256,7 +258,6 @@ export async function pushAll(
  */
 export async function migrateLegacyFlatSubscriptions(uid: string): Promise<Subscription[]> {
   try {
-    const { query, where } = await import('firebase/firestore');
     const q = query(collection(db, 'subscriptions'), where('user_id', '==', uid));
     const snap = await getDocs(q);
     const out: Subscription[] = [];
