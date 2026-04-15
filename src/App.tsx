@@ -32,6 +32,28 @@ const LANG_OPTIONS = [
 
 const CURRENCIES: Currency[] = ['BRL','USD','EUR','GBP','JPY','TRY','ARS','INR','IDR','CAD','AUD','CHF','CNY','MXN','BTC','SATS'];
 
+function UserAvatar({ user, onClick }: { user: import('@supabase/supabase-js').User; onClick: () => void }) {
+  const [imgError, setImgError] = React.useState(false);
+  const avatarUrl = user.user_metadata?.avatar_url || user.user_metadata?.picture;
+  if (avatarUrl && !imgError) {
+    return (
+      <img
+        src={avatarUrl}
+        onClick={onClick}
+        onError={() => setImgError(true)}
+        className="w-10 h-10 rounded-full border border-gray-800 cursor-pointer object-cover"
+        alt="User"
+        referrerPolicy="no-referrer"
+      />
+    );
+  }
+  return (
+    <div onClick={onClick} className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold cursor-pointer">
+      {(user.user_metadata?.full_name || user.email || 'U').charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
 export default function App() {
   const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, setGoogleAccessToken } = useAppContext();
   const t = useTranslation(language);
@@ -55,12 +77,17 @@ export default function App() {
   const secretTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const showToast = (msg: string, ok = true) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToast({ msg, ok });
     toastTimeoutRef.current = setTimeout(() => setToast(null), 4000);
   };
+
+  // Inline multilingual helper — avoids touching i18n for small UX strings
+  const m = (pt: string, en: string, es: string, it: string) =>
+    ({ pt, en, es, it }[language as 'pt'|'en'|'es'|'it'] ?? en);
 
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
@@ -75,10 +102,10 @@ export default function App() {
           const { data, error } = await supabase.auth.exchangeCodeForSession(event.url);
           if (error) {
             console.error('[BoaWallet] OAuth code exchange failed:', error.message);
-            showToast('Login falhou: ' + error.message, false);
+            showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
           } else if (data.session) {
             console.log('[BoaWallet] OAuth session established!', data.session.user.email);
-            showToast('Login realizado com sucesso!', true);
+            showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
           }
         } catch (e: any) {
           console.error('[BoaWallet] appUrlOpen error:', e);
@@ -290,6 +317,7 @@ export default function App() {
 
   // --- Auth ---
   const handleLogin = async () => {
+    setLoggingIn(true);
     try {
       if (Capacitor.isNativePlatform()) {
         // Step 1: Try Firebase native Google sign-in (fastest, no browser redirect)
@@ -303,10 +331,7 @@ export default function App() {
         }
 
         if (idToken) {
-          // Firebase worked — use idToken to create Supabase session
           console.log('[BoaWallet] Firebase token received, authenticating with Supabase...');
-
-          // Also sync to Firebase Web SDK (for Firestore writes)
           try {
             const credential = GoogleAuthProvider.credential(idToken);
             await signInWithCredential(firebaseAuth, credential);
@@ -317,24 +342,20 @@ export default function App() {
           const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
           if (error) {
             console.warn('[BoaWallet] signInWithIdToken failed, falling back to browser OAuth:', error.message);
-            // Fall through to browser OAuth below
             idToken = null;
           } else {
             console.log('[BoaWallet] Supabase session established via Firebase token.');
-            showToast('Login realizado!', true);
+            showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
             return;
           }
         }
 
-        // Step 2: Browser-based OAuth fallback (handles the deep link via appUrlOpen)
+        // Step 2: Browser-based OAuth fallback
         console.log('[BoaWallet] Opening browser for Supabase OAuth...');
-        showToast(language === 'pt' ? 'Abrindo login no navegador...' : 'Opening browser login...', true);
+        showToast(m('Abrindo o navegador para login...', 'Opening browser to sign in...', 'Abriendo navegador para iniciar sesión...', 'Apertura del browser per accedere...'), true);
         const { error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
-          options: {
-            redirectTo: 'io.boa.wallet://auth',
-            skipBrowserRedirect: false,
-          },
+          options: { redirectTo: 'io.boa.wallet://auth', skipBrowserRedirect: false },
         });
         if (error) throw error;
 
@@ -348,7 +369,9 @@ export default function App() {
       }
     } catch (error: any) {
       console.error('[BoaWallet] Login error:', error);
-      showToast(language === 'pt' ? 'Erro no login: ' + error.message : 'Login error: ' + error.message, false);
+      showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+    } finally {
+      setLoggingIn(false);
     }
   };
 
@@ -539,14 +562,16 @@ export default function App() {
           [toMinimalSupabaseRow(fullSub, user.id)]
         );
         if (result === 'fail') {
-          showToast(language === 'pt' ? 'Salvo localmente (falha na nuvem)' : 'Saved locally (cloud sync failed)', false);
+          showToast(m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
+        } else {
+          showToast(m('Item salvo!', 'Item saved!', '¡Elemento guardado!', 'Elemento salvato!'), true);
         }
 
         // 3. Firebase (secondary) — silent
         setDoc(doc(db, 'subscriptions', fullSub.id), fullSub).catch(() => {});
       } catch (error: any) {
         console.error('Save error', error);
-        showToast(language === 'pt' ? 'Salvo localmente (erro de rede)' : 'Saved locally (network error)', false);
+        showToast(m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
       }
     } else {
       setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]);
@@ -646,18 +671,16 @@ export default function App() {
             withUser.map(s => toMinimalSupabaseRow(s, user.id))
           );
 
-          if (result === 'ok') {
-            showToast(language === 'pt' ? `${n} itens importados e salvos na nuvem!` : `${n} items imported & saved to cloud!`, true);
-          } else if (result === 'partial') {
-            showToast(language === 'pt' ? `${n} itens importados (execute o SQL do supabase_setup.sql para sync completo)` : `${n} items imported (run supabase_setup.sql for full sync)`, true);
+          if (result === 'ok' || result === 'partial') {
+            showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
           } else {
-            showToast(language === 'pt' ? `${n} itens salvos localmente (cloud offline)` : `${n} items saved locally (cloud offline)`, false);
+            showToast(m(`${n} itens salvos localmente`, `${n} items saved locally`, `${n} elementos guardados localmente`, `${n} elementi salvati in locale`), false);
           }
 
           // Firebase secondary — silent
           withUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
         } else {
-          showToast(language === 'pt' ? `${n} itens importados! Faça login para salvar na nuvem.` : `${n} items imported! Login to sync to cloud.`, true);
+          showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
         }
       } catch (err: any) {
         console.error('Import error:', err);
@@ -715,18 +738,21 @@ export default function App() {
             {/* Theme Toggle Removed */}
             
             {/* User */}
-            {authLoading ? <div className="w-10 h-10 rounded-full border-2 border-[#d0d0a0]/30 border-t-[#d0d0a0] animate-spin" /> : user ? (
+            {authLoading ? (
+              <div className="w-10 h-10 rounded-full border-2 border-[#d0d0a0]/30 border-t-[#d0d0a0] animate-spin" />
+            ) : user ? (
               <div className="relative">
-                {user.user_metadata?.avatar_url || user.user_metadata?.picture ? (
-                  <img src={user.user_metadata?.avatar_url || user.user_metadata?.picture} onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-10 h-10 rounded-full border border-gray-800 cursor-pointer object-cover" alt="User" referrerPolicy="no-referrer" />
-                ) : (
-                  <div onClick={() => setShowProfileMenu(!showProfileMenu)} className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold cursor-pointer">{(user.user_metadata?.full_name || user.email || 'U').charAt(0).toUpperCase()}</div>
-                )}
+                <UserAvatar user={user} onClick={() => setShowProfileMenu(!showProfileMenu)} />
                 {showProfileMenu && (
                   <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-1 min-w-[140px]">
-                    <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-red-400 text-sm flex items-center gap-2 hover:bg-gray-800"><LogOut size={16} /> Sair</button>
+                    <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-red-400 text-sm flex items-center gap-2 hover:bg-gray-800"><LogOut size={16} /> {m('Sair', 'Sign out', 'Cerrar sesión', 'Esci')}</button>
                   </div>
                 )}
+              </div>
+            ) : loggingIn ? (
+              <div className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] border border-gray-700 rounded-xl text-sm text-gray-300">
+                <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-[#d0d0a0] animate-spin" />
+                {m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
               </div>
             ) : (
               <button onClick={handleLogin} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
@@ -852,10 +878,10 @@ export default function App() {
               <button
                 onClick={async () => {
                   if (!user) {
-                    showToast(language === 'pt' ? 'Faça login para sincronizar' : 'Login to sync', false);
+                    showToast(m('Faça login para sincronizar', 'Please log in to sync', 'Inicia sesión para sincronizar', 'Accedi per sincronizzare'), false);
                     return;
                   }
-                  showToast(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
+                  showToast(m('Sincronizando...', 'Syncing...', 'Sincronizando...', 'Sincronizzazione...'));
                   try {
                     // Refresh session — avoids stale-token 401 errors
                     await supabase.auth.refreshSession().catch(() => {});
@@ -903,10 +929,10 @@ export default function App() {
                       merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
                       if (result === 'fail') throw new Error('Cloud push failed');
                     }
-                    showToast(language === 'pt' ? `Sincronizado! ${merged.length} itens` : `Synced! ${merged.length} items`, true);
+                    showToast(m(`Sincronizado! ${merged.length} itens`, `Synced! ${merged.length} items`, `¡Sincronizado! ${merged.length} elementos`, `Sincronizzato! ${merged.length} elementi`), true);
                   } catch (err: any) {
                     console.error('Manual sync failed', err);
-                    showToast(language === 'pt' ? 'Erro: ' + err.message : 'Error: ' + err.message, false);
+                    showToast(m('Erro ao sincronizar. Tente novamente.', 'Sync failed. Please try again.', 'Error al sincronizar. Inténtalo de nuevo.', 'Sincronizzazione fallita. Riprova.'), false);
                   }
                 }}
                 className="w-full py-4 rounded-xl bg-[#1a1a1a] border border-gray-800 flex items-center gap-3 px-5 font-medium hover:bg-gray-800"
