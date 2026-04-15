@@ -365,7 +365,7 @@ export default function App() {
     } catch (error) { console.error('Logout error', error); }
   };
   
-  // Only include columns that exist in the Supabase table — prevents "unknown column" errors
+  // FULL row — all known columns (requires ALTER TABLE from supabase_setup.sql to have been run)
   const toSupabaseRow = (sub: Subscription, userId: string) => ({
     id: sub.id,
     user_id: userId,
@@ -410,6 +410,66 @@ export default function App() {
     createdAt: sub.createdAt,
     updatedAt: sub.updatedAt,
   });
+
+  // MINIMAL row — only the original columns guaranteed to exist in ALL Supabase installs
+  const toMinimalSupabaseRow = (sub: Subscription, userId: string) => ({
+    id: sub.id,
+    user_id: userId,
+    userId: (sub as any).userId || (sub as any).user_id || userId,
+    name: sub.name,
+    emoji: sub.emoji,
+    category: sub.category,
+    notes: sub.notes,
+    status: sub.status,
+    costAmount: sub.costAmount,
+    costCurrency: sub.costCurrency,
+    billingCycle: sub.billingCycle,
+    dueDate: sub.dueDate,
+    paymentMethod: sub.paymentMethod,
+    isPromotional: sub.isPromotional,
+    promoEndDate: sub.promoEndDate,
+    hasCashback: sub.hasCashback,
+    cashbackPercentage: sub.cashbackPercentage,
+    autoRenewDate: sub.autoRenewDate,
+    reminderDisabled: sub.reminderDisabled,
+    paymentHistory: sub.paymentHistory,
+    hasEarlyPayDiscount: sub.hasEarlyPayDiscount,
+    earlyPayDate: sub.earlyPayDate,
+    earlyPayCost: sub.earlyPayCost,
+    hasIncome: sub.hasIncome,
+    incomeAmount: sub.incomeAmount,
+    incomeCurrency: sub.incomeCurrency,
+    incomeFrequency: sub.incomeFrequency,
+    incomeSourceDescription: sub.incomeSourceDescription,
+    sharedWith: sub.sharedWith,
+    subItems: sub.subItems,
+    fiatReferenceAmount: sub.fiatReferenceAmount,
+    fiatReferenceCurrency: sub.fiatReferenceCurrency,
+    createdAt: sub.createdAt,
+    updatedAt: sub.updatedAt,
+  });
+
+  // Two-tier Supabase save: tries full row first, falls back to minimal if column errors
+  const saveToSupabase = async (rows: any[], minimalRows: any[]): Promise<'ok' | 'partial' | 'fail'> => {
+    try {
+      await supabase.auth.refreshSession();
+    } catch { /* session refresh best-effort */ }
+
+    // Tier 1: full columns
+    const { error: e1 } = await supabase.from('subscriptions').upsert(rows);
+    if (!e1) return 'ok';
+
+    const isColumnError = e1.code === '42703' || e1.message?.toLowerCase().includes('column');
+    console.warn('[BoaWallet] Full upsert failed:', e1.message, '| column error?', isColumnError);
+
+    if (isColumnError) {
+      // Tier 2: minimal columns (always works with original table schema)
+      const { error: e2 } = await supabase.from('subscriptions').upsert(minimalRows);
+      if (!e2) return 'partial'; // saved, but missing some extended fields
+      console.error('[BoaWallet] Minimal upsert also failed:', e2.message);
+    }
+    return 'fail';
+  };
 
   const normalizeSubscription = (s: any): Subscription => {
     const normalizeDate = (d: any) => {
@@ -465,25 +525,25 @@ export default function App() {
           updatedAt: new Date().toISOString()
         });
 
-        // Optimistic update + local backup
+        // 1. Always save locally FIRST (never lose data)
         const updated = isNew
           ? [...subscriptions, fullSub]
           : subscriptions.map((x: Subscription) => x.id === sub.id ? fullSub : x);
         setSubscriptions(updated);
         localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updated));
+        localStorage.setItem('subscriptions', JSON.stringify(updated));
 
-        // Supabase (primary) — strict row mapper prevents unknown-column errors
-        const supaRow = toSupabaseRow(fullSub, user.id);
-        const supaResult = await supabase.from('subscriptions').upsert(supaRow);
-        if (supaResult.error) {
-          console.error('[BoaWallet] Supabase save error:', supaResult.error);
+        // 2. Supabase two-tier save
+        const result = await saveToSupabase(
+          [toSupabaseRow(fullSub, user.id)],
+          [toMinimalSupabaseRow(fullSub, user.id)]
+        );
+        if (result === 'fail') {
           showToast(language === 'pt' ? 'Salvo localmente (falha na nuvem)' : 'Saved locally (cloud sync failed)', false);
         }
 
-        // Firebase (secondary/legacy) — silent, only log
-        setDoc(doc(db, 'subscriptions', fullSub.id), fullSub).catch(fbErr => {
-          console.warn('[BoaWallet] Firebase secondary sync failed (non-critical):', fbErr);
-        });
+        // 3. Firebase (secondary) — silent
+        setDoc(doc(db, 'subscriptions', fullSub.id), fullSub).catch(() => {});
       } catch (error: any) {
         console.error('Save error', error);
         showToast(language === 'pt' ? 'Salvo localmente (erro de rede)' : 'Saved locally (network error)', false);
@@ -569,31 +629,35 @@ export default function App() {
         }
 
         const normalized = subscriptionsToImport.map(s => normalizeSubscription(s));
-        
+        const n = normalized.length;
+
+        // 1. Always save locally FIRST
         setSubscriptions(normalized);
         localStorage.setItem('subscriptions', JSON.stringify(normalized));
-        
+
         if (user) {
-          console.log('[BoaWallet] Syncing imported data to Cloud...');
-          // Use strict mapper to avoid unknown-column Supabase errors
-          const supaRows = normalized.map(s => toSupabaseRow(s, user.id));
-          const toUpload = normalized.map(s => ({ ...s, user_id: user.id, userId: user.id }));
+          // Tag every item with this user's id
+          const withUser = normalized.map(s => normalizeSubscription({ ...s, user_id: user.id, userId: user.id }));
+          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(withUser));
 
-          // Push to Supabase (strict columns only)
-          const supaRes = await supabase.from('subscriptions').upsert(supaRows);
+          console.log('[BoaWallet] Pushing imported data to Cloud...');
+          const result = await saveToSupabase(
+            withUser.map(s => toSupabaseRow(s, user.id)),
+            withUser.map(s => toMinimalSupabaseRow(s, user.id))
+          );
 
-          if (supaRes.error) {
-            console.error('[BoaWallet] Import Supabase error:', supaRes.error);
-            showToast(language === 'pt' ? `${normalized.length} itens importados (falha parcial na nuvem)` : `${normalized.length} items imported (partial cloud sync failure)`, false);
+          if (result === 'ok') {
+            showToast(language === 'pt' ? `${n} itens importados e salvos na nuvem!` : `${n} items imported & saved to cloud!`, true);
+          } else if (result === 'partial') {
+            showToast(language === 'pt' ? `${n} itens importados (execute o SQL do supabase_setup.sql para sync completo)` : `${n} items imported (run supabase_setup.sql for full sync)`, true);
           } else {
-            showToast(language === 'pt' ? `${normalized.length} itens importados com sucesso!` : `${normalized.length} items imported successfully!`, true);
+            showToast(language === 'pt' ? `${n} itens salvos localmente (cloud offline)` : `${n} items saved locally (cloud offline)`, false);
           }
 
-          // Firebase (secondary) — silent
-          toUpload.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
-          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(toUpload));
+          // Firebase secondary — silent
+          withUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
         } else {
-          showToast(language === 'pt' ? `${normalized.length} itens importados!` : `${normalized.length} items imported!`, true);
+          showToast(language === 'pt' ? `${n} itens importados! Faça login para salvar na nuvem.` : `${n} items imported! Login to sync to cloud.`, true);
         }
       } catch (err: any) {
         console.error('Import error:', err);
@@ -793,16 +857,24 @@ export default function App() {
                   }
                   showToast(language === 'pt' ? 'Sincronizando...' : 'Syncing...');
                   try {
-                    // Refresh session first to avoid stale-token errors
-                    await supabase.auth.refreshSession();
+                    // Refresh session — avoids stale-token 401 errors
+                    await supabase.auth.refreshSession().catch(() => {});
 
+                    // Pull from Supabase (primary)
                     const { data: supaData, error: supaErr } = await supabase
                       .from('subscriptions').select('*').eq('user_id', user.id);
-
-                    if (supaErr) throw supaErr;
+                    if (supaErr) throw new Error('Supabase: ' + supaErr.message);
 
                     const supaSubs = (supaData as any[]) || [];
-                    // Firebase fetch (secondary, silent)
+
+                    // Pull from local cache as well
+                    let localSubs: any[] = [];
+                    try {
+                      const raw = localStorage.getItem('subscriptions_' + user.id) || localStorage.getItem('subscriptions');
+                      if (raw) localSubs = JSON.parse(raw);
+                    } catch { /* ignore */ }
+
+                    // Firebase (secondary, silent)
                     let fireSubs: any[] = [];
                     try {
                       const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
@@ -810,18 +882,26 @@ export default function App() {
                       snap.forEach(d => fireSubs.push({ ...d.data(), id: d.id }));
                     } catch { /* silent */ }
 
+                    // Merge: local → firebase → supabase (Supabase wins)
                     const mergedMap = new Map();
+                    localSubs.forEach((s: any) => mergedMap.set(s.id, s));
                     fireSubs.forEach(s => mergedMap.set(s.id, s));
-                    supaSubs.forEach(s => mergedMap.set(s.id, s)); // Supabase wins
+                    supaSubs.forEach(s => mergedMap.set(s.id, s));
                     const merged = Array.from(mergedMap.values()).map(normalizeSubscription);
 
+                    // Save locally
                     setSubscriptions(merged);
                     localStorage.setItem('subscriptions_' + user.id, JSON.stringify(merged));
+                    localStorage.setItem('subscriptions', JSON.stringify(merged));
 
+                    // Push merged back to cloud (two-tier)
                     if (merged.length > 0) {
-                      const rows = merged.map(s => toSupabaseRow(s, user.id));
-                      await supabase.from('subscriptions').upsert(rows);
+                      const result = await saveToSupabase(
+                        merged.map(s => toSupabaseRow(s, user.id)),
+                        merged.map(s => toMinimalSupabaseRow(s, user.id))
+                      );
                       merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
+                      if (result === 'fail') throw new Error('Cloud push failed');
                     }
                     showToast(language === 'pt' ? `Sincronizado! ${merged.length} itens` : `Synced! ${merged.length} items`, true);
                   } catch (err: any) {
