@@ -3,6 +3,8 @@ import { Subscription, Currency, convertCurrency, getMonthlyAmount, getEffective
 import { formatCurrency } from '../lib/utils';
 import { Calendar, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { useAppContext } from '../AppContext';
+import { bestLogoUrl } from '../lib/logos';
+import { isSharedMemberPaid } from '../lib/sharedMembers';
 
 interface Props {
   subscriptions: Subscription[];
@@ -140,7 +142,7 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
                             <div>
                               <p className="text-sm font-semibold text-white flex items-center gap-2">
                                 {client.name}
-                                {client.paidCurrentMonth && <span className="text-[9px] bg-emerald-950 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-900/50">PAGO</span>}
+                                {isSharedMemberPaid(client) && <span className="text-[9px] bg-emerald-950 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-900/50">PAGO</span>}
                               </p>
                               <p className="text-xs text-emerald-500">
                                 {language === 'pt' ? 'Pagamento ref.' : 'Payment for'} {sub.name}
@@ -148,7 +150,7 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className={`text-sm font-bold ${client.paidCurrentMonth ? 'text-gray-500' : 'text-white'}`}>{formatCurrency(client.amount, client.currency || sub.costCurrency)}</p>
+                            <p className={`text-sm font-bold ${isSharedMemberPaid(client) ? 'text-gray-500' : 'text-white'}`}>{formatCurrency(client.amount, client.currency || sub.costCurrency)}</p>
                             <p className="text-[10px] text-emerald-500 uppercase font-bold">{language === 'pt' ? 'Recebimento' : 'Income'}</p>
                           </div>
                         </div>
@@ -156,18 +158,24 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
                     } else {
                       const { sub } = event;
                       const cost = getEffectiveTotalCost(sub);
+                      const logoUrl = bestLogoUrl(sub.logoUrl, sub.name);
                       return (
-                        <div key={`sub-${sub.id}-${idx}`} onClick={() => onEdit(sub)} className={`px-5 py-3 hover:bg-white/5 cursor-pointer transition-colors flex items-center justify-between ${isPaused ? 'opacity-50' : ''}`}>
+                        <div key={`sub-${sub.id}-${idx}`} onClick={() => { if (!sub.isSharedIncoming) onEdit(sub); }} className={`px-5 py-3 hover:bg-white/5 ${sub.isSharedIncoming ? 'cursor-default' : 'cursor-pointer'} transition-colors flex items-center justify-between ${isPaused ? 'opacity-50' : ''}`}>
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-xl overflow-hidden border border-gray-700">
-                               {sub.logoUrl ? <img src={sub.logoUrl} className="w-full h-full object-cover" alt="" /> : <span>{sub.emoji}</span>}
+                               {logoUrl ? <img src={logoUrl} className="w-full h-full object-contain bg-white p-0.5" alt="" referrerPolicy="no-referrer" /> : <span>{sub.emoji}</span>}
                             </div>
                             <div>
                               <p className="text-sm font-semibold text-white flex items-center gap-2">
                                 {sub.name}
                                 {isPaused && <span className="text-[9px] bg-orange-950 text-orange-400 px-1.5 py-0.5 rounded border border-orange-900/50">PAUSADO</span>}
+                                {sub.isSharedIncoming && <span className="text-[9px] bg-[#2a2a20] text-[#d0d0a0] px-1.5 py-0.5 rounded border border-[#5A5A40]/40">COMPARTILHADO</span>}
                               </p>
-                              <p className="text-xs text-gray-500">{sub.category}</p>
+                              <p className="text-xs text-gray-500">
+                                {sub.isSharedIncoming && sub.sharedOwnerUsername
+                                  ? `Compartilhado por @${sub.sharedOwnerUsername}`
+                                  : sub.category}
+                              </p>
                             </div>
                           </div>
                           <div className="text-right">
@@ -199,10 +207,15 @@ export function CalendarView({ subscriptions, baseCurrency, exchangeRates, onEdi
               {flex.map(sub => {
                 const cost = getEffectiveTotalCost(sub);
                 return (
-                  <div key={sub.id} onClick={() => onEdit(sub)} className="flex items-center justify-between p-3 rounded-xl bg-black/20 hover:bg-black/40 cursor-pointer transition-all border border-transparent hover:border-gray-800">
+                  <div key={sub.id} onClick={() => { if (!sub.isSharedIncoming) onEdit(sub); }} className={`flex items-center justify-between p-3 rounded-xl bg-black/20 hover:bg-black/40 transition-all border border-transparent hover:border-gray-800 ${sub.isSharedIncoming ? 'cursor-default' : 'cursor-pointer'}`}>
                     <div className="flex items-center gap-3">
                       <span className="text-xl">{sub.emoji}</span>
-                      <span className="text-sm font-medium">{sub.name}</span>
+                      <div>
+                        <span className="text-sm font-medium">{sub.name}</span>
+                        {sub.isSharedIncoming && sub.sharedOwnerUsername && (
+                          <p className="text-[10px] text-[#d0d0a0]">de @{sub.sharedOwnerUsername}</p>
+                        )}
+                      </div>
                     </div>
                     <span className="text-sm font-bold">{formatCurrency(cost.amount, cost.currency)}</span>
                   </div>

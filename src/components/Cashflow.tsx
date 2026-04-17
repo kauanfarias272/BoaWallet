@@ -3,6 +3,7 @@ import { Subscription, Currency, convertCurrency, getEffectiveTotalCost } from '
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
 import { TrendingUp, TrendingDown, X, EyeOff } from 'lucide-react';
+import { bestLogoUrl } from '../lib/logos';
 
 interface CashflowProps {
   subscriptions: Subscription[];
@@ -32,6 +33,22 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
     return convertCurrency(monthlyAmount, currency, baseCurrency, exchangeRates as Record<Currency, number>);
   };
 
+  const getConfirmedSharedIncome = (sub: Subscription) => {
+    const confirmedMembers = (sub.sharedWith || []).filter((member) => !member.userId || !!member.accepted);
+    if (confirmedMembers.length === 0) return sub.hasIncome ? getMonthlyValue(sub.incomeAmount, sub.incomeCurrency, sub.incomeFrequency) : 0;
+
+    const confirmedAmount = confirmedMembers.reduce((total, member) => {
+      return total + convertCurrency(
+        Number(member.amount || 0),
+        member.currency || sub.costCurrency,
+        sub.incomeCurrency || sub.costCurrency,
+        exchangeRates as Record<Currency, number>
+      );
+    }, 0);
+
+    return getMonthlyValue(confirmedAmount, sub.incomeCurrency || sub.costCurrency, sub.incomeFrequency || sub.billingCycle);
+  };
+
   const formatCurrency = (amount: number) => {
     const safeAmount = Number(amount) || 0;
     if (baseCurrency === 'BTC' || baseCurrency === 'SATS') {
@@ -46,9 +63,9 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
   const items = subscriptions.map(sub => {
     const effectiveCost = getEffectiveTotalCost(sub);
     const monthlyCost = getMonthlyValue(effectiveCost.amount, effectiveCost.currency, sub.billingCycle);
-    const monthlyIncome = sub.hasIncome ? getMonthlyValue(sub.incomeAmount, sub.incomeCurrency, sub.incomeFrequency) : 0;
+    const monthlyIncome = sub.hasIncome ? getConfirmedSharedIncome(sub) : 0;
     const netValue = monthlyIncome - monthlyCost;
-    return { ...sub, netValue };
+    return { ...sub, netValue, resolvedLogoUrl: bestLogoUrl(sub.logoUrl, sub.name) };
   });
 
   const activeItems = items.filter(item => !ignoredIds.has(item.id));
@@ -83,8 +100,8 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
             profitable.map(item => (
               <div key={item.id} className="flex items-center justify-between p-3 bg-[#fdfbf7] dark:bg-[#121212] rounded-xl border border-gray-100 dark:border-gray-800">
                 <div className="flex items-center gap-3">
-                  {item.logoUrl ? (
-                    <img src={item.logoUrl} alt={item.name} className="w-8 h-8 rounded-full bg-white object-cover" referrerPolicy="no-referrer" />
+                  {item.resolvedLogoUrl ? (
+                    <img src={item.resolvedLogoUrl} alt={item.name} className="w-8 h-8 rounded-full bg-white object-contain p-0.5" referrerPolicy="no-referrer" />
                   ) : (
                     <span className="text-2xl">{item.emoji}</span>
                   )}
@@ -134,8 +151,8 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
             expenses.map(item => (
               <div key={item.id} className="flex items-center justify-between p-3 bg-[#fdfbf7] dark:bg-[#121212] rounded-xl border border-gray-100 dark:border-gray-800">
                 <div className="flex items-center gap-3">
-                  {item.logoUrl ? (
-                    <img src={item.logoUrl} alt={item.name} className="w-8 h-8 rounded-full bg-white object-cover" referrerPolicy="no-referrer" />
+                  {item.resolvedLogoUrl ? (
+                    <img src={item.resolvedLogoUrl} alt={item.name} className="w-8 h-8 rounded-full bg-white object-contain p-0.5" referrerPolicy="no-referrer" />
                   ) : (
                     <span className="text-2xl">{item.emoji}</span>
                   )}
@@ -195,8 +212,8 @@ export function Cashflow({ subscriptions, baseCurrency, exchangeRates }: Cashflo
                 className="flex items-center gap-2 px-3 py-1.5 bg-[#fdfbf7] dark:bg-[#222] border border-gray-200 dark:border-gray-700 rounded-full text-sm hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                 title="Restaurar"
               >
-                {item.logoUrl ? (
-                  <img src={item.logoUrl} alt={item.name} className="w-4 h-4 rounded-full bg-white object-cover" referrerPolicy="no-referrer" />
+                {item.resolvedLogoUrl ? (
+                  <img src={item.resolvedLogoUrl} alt={item.name} className="w-4 h-4 rounded-full bg-white object-contain p-0.5" referrerPolicy="no-referrer" />
                 ) : (
                   <span>{item.emoji}</span>
                 )}

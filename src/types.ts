@@ -4,6 +4,10 @@ export type PaymentMethod = 'Cartão de Crédito' | 'Cartão de Débito' | 'Gift
 export type PaymentSource = 'Revolut' | 'N26' | 'Nubank' | 'Wise' | 'Inter' | 'Intesa Sanpaolo' | 'Bitrefill' | 'Outro';
 
 export type BillingCycle = 'Monthly' | 'Yearly';
+export type SharePaymentMode = 'immediate' | 'bitcoin';
+export type SharePaymentType = 'onetime' | 'monthly';
+export type SharePaymentStatus = 'unpaid' | 'paid' | 'active' | 'overdue' | 'disputed' | 'cancelled';
+export type CredentialsReleaseMode = 'after_accept' | 'after_payment';
 
 export interface SubItem {
   id: string;
@@ -26,11 +30,30 @@ export type SubscriptionType = 'Subscription' | 'FixedExpense';
 export interface SharedMember {
   id: string;
   name: string;
+  userId?: string;
+  username?: string;
+  accepted?: boolean;
+  shareCredentials?: boolean;
+  shareType?: 'amount' | 'percentage';
+  percentage?: number;
   amount: number;
   currency: Currency;
   info?: string;
   paymentDate?: number;
   paidCurrentMonth?: boolean;
+  lastPaidPeriod?: string;
+  paymentMode?: SharePaymentMode;
+  paymentType?: SharePaymentType;
+  paymentStatus?: SharePaymentStatus;
+  bitcoinAmountSats?: number;
+  platformFeeSats?: number;
+  guaranteeSats?: number;
+  credentialsUnlocked?: boolean;
+  lastPaidAt?: string;
+  nextPaymentDueAt?: string;
+  pendingReleaseUntil?: string;
+  latestPaymentEventId?: string;
+  publicJoin?: boolean;
 }
 
 export interface Subscription {
@@ -41,6 +64,11 @@ export interface Subscription {
   logoUrl?: string; // Optional app logo URL
   category: string;
   notes?: string; // User notes
+  isPublic?: boolean;
+  allowPublicParticipants?: boolean;
+  publicSharePriceSats?: number;
+  publicPaymentType?: SharePaymentType;
+  publicCredentialsEnabled?: boolean;
   
   costAmount: number;
   costCurrency: Currency;
@@ -66,6 +94,8 @@ export interface Subscription {
   paymentMethod: PaymentMethod;
   paymentSource: string;
   bankLogoUrl?: string; // Optional bank logo URL
+  serviceUsername?: string;
+  servicePassword?: string;
   
   hasCashback: boolean;
   cashbackPercentage: number;
@@ -79,6 +109,12 @@ export interface Subscription {
   isSingleExpense?: boolean;
   isFlexibleDate?: boolean;
   sharedWith?: SharedMember[];
+  isSharedIncoming?: boolean;
+  sharedOwnerId?: string;
+  sharedOwnerName?: string;
+  sharedOwnerUsername?: string;
+  sourceSubscriptionId?: string;
+  sourceShareId?: string;
 
   status?: 'active' | 'cancelled_temporary' | 'cancelled_permanent';
   paymentHistory?: Record<string, 'paid' | 'skipped' | 'auto-paid'>;

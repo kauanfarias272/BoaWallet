@@ -6,14 +6,19 @@ import { SubscriptionForm } from './components/SubscriptionForm';
 import { WelcomeModal } from './components/WelcomeModal';
 import { Cashflow } from './components/Cashflow';
 import { ClientsTab } from './components/ClientsTab';
+import { ShareModal } from './components/ShareModal';
+import { SharedWithMeTab } from './components/SharedWithMeTab';
+import { FriendsModal } from './components/FriendsModal';
+import { LightningWallet } from './components/LightningWallet';
+import { PublicMarketplaceModal } from './components/PublicMarketplaceModal';
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember, BillingCycle } from './types';
-import { Plus, AlertTriangle, LogIn, LogOut, Download, Upload, FileText, Moon, Sun, ChevronDown, DollarSign, Zap, Database, Settings } from 'lucide-react';
+import { Plus, AlertTriangle, LogOut, Download, Upload, FileText, DollarSign, Database, Settings, Users, Wallet, Globe } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
 import { db, auth as firebaseAuth } from './firebase';
 import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
-import { signInWithCredential, GoogleAuthProvider } from 'firebase/auth';
+import { signInWithCredential, GoogleAuthProvider, signOut as firebaseSignOut } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
@@ -22,6 +27,27 @@ import { Share } from '@capacitor/share';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatCurrency } from './lib/utils';
+import { normalizeLogoUrl } from './lib/logos';
+import { sortFriendPair, FriendshipRow, FriendProfile, readFriendsCache, writeFriendsCache } from './lib/friends';
+import { findSharedMemberForUser, normalizeSharedMember, resolveSharedMemberAmount, withSharedMemberPaymentStatus } from './lib/sharedMembers';
+import { claimPendingTransfers, processRecurringMemberships, releaseDueSubscriptionEscrows } from './lib/platformPayments';
+import { hydrateUserSearchCache, prefetchBoaUsers } from './lib/userSearch';
+import { withTimeout } from './lib/requestTimeout';
+import { embedCredentialsInNotes, stripCredentialsFromNotes } from './lib/serviceCredentials';
+import { syncToWatch } from './lib/wearSync';
+
+/** Firebase rejects objects with `undefined` values — strip them before setDoc */
+function sanitizeForFirebase(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(sanitizeForFirebase);
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, sanitizeForFirebase(v)])
+    );
+  }
+  return obj;
+}
 
 const LANG_OPTIONS = [
   { code: 'en', label: 'EN', flag: '🇺🇸' },
@@ -55,11 +81,12 @@ function UserAvatar({ user, onClick }: { user: import('@supabase/supabase-js').U
 }
 
 export default function App() {
-  const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, setGoogleAccessToken } = useAppContext();
+  const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, setGoogleAccessToken, userHandle, saveUserHandle } = useAppContext();
   const t = useTranslation(language);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar' | 'clients'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar' | 'clients' | 'shared' | 'wallet'>('overview');
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [receivedSubscriptions, setReceivedSubscriptions] = useState<Subscription[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingSub, setEditingSub] = useState<Subscription | undefined>();
@@ -72,12 +99,48 @@ export default function App() {
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
+  const [showMarketplaceModal, setShowMarketplaceModal] = useState(false);
   const [showSecretMenu, setShowSecretMenu] = useState(false);
   const [secretClickCount, setSecretClickCount] = useState(0);
   const secretTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [loginMethod, setLoginMethod] = useState<'google' | 'web3' | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [shareSub, setShareSub] = useState<Subscription | null>(null);
+  const [sharePreUser, setSharePreUser] = useState<{ id: string; name?: string; username: string } | null>(null);
+  const [shareTargetUser, setShareTargetUser] = useState<{ id: string; name?: string; username: string } | null>(null);
+  const [pendingHandle, setPendingHandle] = useState('');
+  const [handleSaving, setHandleSaving] = useState(false);
+  const [handleError, setHandleError] = useState('');
+  const [friends, setFriends] = useState<FriendProfile[]>([]);
+  const [friendsLoading, setFriendsLoading] = useState(false);
+
+  type SubscriptionMemberRow = {
+    id: string;
+    subscription_id: string;
+    owner_id: string;
+    member_id: string;
+    amount: number;
+    currency: string;
+    accepted: boolean;
+    created_at: string;
+    payment_mode?: 'immediate' | 'bitcoin';
+    payment_type?: 'onetime' | 'monthly';
+    bitcoin_amount_sats?: number;
+    payment_status?: 'unpaid' | 'paid' | 'active' | 'overdue' | 'disputed' | 'cancelled';
+    credentials_unlocked?: boolean;
+    share_credentials?: boolean;
+    platform_fee_sats?: number;
+    guarantee_sats?: number;
+    last_paid_at?: string;
+    next_payment_due_at?: string;
+    pending_release_until?: string;
+    latest_payment_event_id?: string;
+    public_join?: boolean;
+  };
 
   const showToast = (msg: string, ok = true) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -89,12 +152,15 @@ export default function App() {
   const m = (pt: string, en: string, es: string, it: string) =>
     ({ pt, en, es, it }[language as 'pt'|'en'|'es'|'it'] ?? en);
 
+  const isNativePlatform = Capacitor.getPlatform() !== 'web';
+  const canUseWeb3Login = !isNativePlatform && typeof window !== 'undefined' && !!((window as any).ethereum || (window as any).solana);
+
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
 
   // Handle OAuth deep link callback (Android: io.boa.wallet://auth?code=...)
   useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
+    return;
     const listener = CapApp.addListener('appUrlOpen', async (event) => {
       console.log('[BoaWallet] appUrlOpen:', event.url);
       if (event.url.startsWith('io.boa.wallet://auth')) {
@@ -213,19 +279,25 @@ export default function App() {
   // --- Synchronization ---
   useEffect(() => {
     if (user) {
-      supabase.from('users').upsert({
+      const profilePayload: Record<string, any> = {
         id: user.id, email: user.email,
         name: user.user_metadata?.full_name || userName,
         language, base_currency: baseCurrency,
         updated_at: new Date().toISOString()
-      });
+      };
+      if (userHandle) profilePayload.username = userHandle;
+      supabase.from('users').upsert(profilePayload);
     }
-  }, [user, language, baseCurrency, userName]);
+  }, [user, language, baseCurrency, userName, userHandle]);
 
   useEffect(() => {
     if (!user) {
+      setSyncLoading(false);
+      setReceivedSubscriptions([]);
+      setFriends([]);
+      setFriendsLoading(false);
       try { 
-        const s = localStorage.getItem('subscriptions'); if (s) setSubscriptions(JSON.parse(s)); 
+        const s = localStorage.getItem('subscriptions'); if (s) setSubscriptions(JSON.parse(s).map(normalizeSubscription)); 
         const a = localStorage.getItem('boa_adjustments'); if (a) setAdjustments(JSON.parse(a));
       } catch {}
       return;
@@ -234,8 +306,11 @@ export default function App() {
     const fetchInitialData = async () => {
       if (!user) return;
       console.log('[BoaWallet] Syncing data from cloud...');
+      setSyncLoading(true);
       
       try {
+        let ownedSubscriptions: Subscription[] = [];
+
         // 1. Fetch from Supabase (Primary)
         const { data: subs, error: subsError } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
         
@@ -259,8 +334,7 @@ export default function App() {
              }
           } catch(e) {}
 
-          setSubscriptions(subs as any[]);
-          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subs));
+          ownedSubscriptions = (subs as any[]).map(normalizeSubscription);
         } else if (!subsError) {
           console.log('[BoaWallet] Supabase empty, checking Firebase migration...');
           // 2. Try Firebase Migration (Secondary/Old)
@@ -272,7 +346,7 @@ export default function App() {
             
             if (fireSubs.length > 0) {
               console.log('[BoaWallet] Found Firebase data, migrating:', fireSubs.length);
-              setSubscriptions(fireSubs);
+              ownedSubscriptions = fireSubs.map(normalizeSubscription);
               // Migrate to Supabase
               for (const sub of fireSubs) { 
                 await supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }); 
@@ -284,12 +358,74 @@ export default function App() {
                 const parsed = JSON.parse(cachedSubs);
                 if (Array.isArray(parsed)) {
                    console.log('[BoaWallet] Restoring from local cache:', parsed.length);
-                   setSubscriptions(parsed);
+                   ownedSubscriptions = parsed.map(normalizeSubscription);
                 }
               }
             }
           } catch (err) { console.error('Firebase pull failed', err); }
         }
+
+        const [outgoingRowsResult, incomingRowsResult] = await Promise.all([
+          supabase
+            .from('subscription_members')
+            .select('*')
+            .eq('owner_id', user.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('subscription_members')
+            .select('*')
+            .eq('member_id', user.id)
+            .order('created_at', { ascending: false }),
+        ]);
+
+        const outgoingRows = ((outgoingRowsResult.data as SubscriptionMemberRow[] | null) || []);
+        const incomingRows = ((incomingRowsResult.data as SubscriptionMemberRow[] | null) || []);
+
+        const profileIds = Array.from(
+          new Set([
+            ...outgoingRows.map((row) => row.member_id),
+            ...incomingRows.map((row) => row.owner_id),
+          ])
+        );
+
+        const incomingSourceIds = Array.from(
+          new Set(incomingRows.filter((row) => row.accepted).map((row) => row.subscription_id))
+        );
+
+        const [profilesResult, incomingSourcesResult] = await Promise.all([
+          profileIds.length > 0
+            ? supabase.from('users').select('id,name,username').in('id', profileIds)
+            : Promise.resolve({ data: [] as FriendProfile[] }),
+          incomingSourceIds.length > 0
+            ? supabase.from('subscriptions').select('*').in('id', incomingSourceIds)
+            : Promise.resolve({ data: [] as any[] }),
+        ]);
+
+        const profilesById = Object.fromEntries(
+          (((profilesResult as any).data as FriendProfile[] | null) || []).map((profile) => [profile.id, profile])
+        ) as Record<string, FriendProfile>;
+        hydrateUserSearchCache(Object.values(profilesById));
+
+        const mergedOwnedSubscriptions = mergeOwnedSubscriptionsWithShareRows(
+          ownedSubscriptions,
+          outgoingRows,
+          profilesById
+        );
+
+        const receivedSharedSubscriptions = buildReceivedSubscriptions(
+          incomingRows,
+          ((((incomingSourcesResult as any).data as any[] | null) || []).map(normalizeSubscription)),
+          profilesById,
+          user.id
+        );
+
+        setSubscriptions(mergedOwnedSubscriptions);
+        setReceivedSubscriptions(receivedSharedSubscriptions);
+        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(mergedOwnedSubscriptions));
+        void refreshFriends(user.id);
+        void prefetchBoaUsers(user.id, 40);
+        // Sincroniza dados com o app do relógio
+        void syncToWatch(user, userHandle, mergedOwnedSubscriptions, baseCurrency, exchangeRates);
 
         const { data: adjs, error: adjsError } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
         if (adjs && adjs.length > 0) {
@@ -298,6 +434,8 @@ export default function App() {
         }
       } catch (err) {
         console.error('[BoaWallet] Sync failed', err);
+      } finally {
+        setSyncLoading(false);
       }
     };
 
@@ -309,55 +447,178 @@ export default function App() {
     const adjsSubscription = supabase.channel('adjs_v15_' + user.id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'adjustments', filter: `user_id=eq.${user.id}` }, fetchInitialData).subscribe();
 
+    const outgoingSharesSubscription = supabase.channel('shared_owner_v3_' + user.id)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'subscription_members', filter: `owner_id=eq.${user.id}` }, fetchInitialData).subscribe();
+
+    const incomingSharesSubscription = supabase.channel('shared_member_v3_' + user.id)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'subscription_members', filter: `member_id=eq.${user.id}` }, fetchInitialData).subscribe();
+
     return () => {
       supabase.removeChannel(subsSubscription);
       supabase.removeChannel(adjsSubscription);
+      supabase.removeChannel(outgoingSharesSubscription);
+      supabase.removeChannel(incomingSharesSubscription);
     };
   }, [user]);
 
+  useEffect(() => {
+    if (!user) {
+      setFriends([]);
+      return;
+    }
+
+    refreshFriends(user.id);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    void prefetchBoaUsers(user.id, 40);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const released = await releaseDueSubscriptionEscrows();
+        const recurring = await processRecurringMemberships(user.id);
+        const claimed = await claimPendingTransfers(user.id, userHandle);
+
+        if (cancelled) return;
+
+        if (released > 0) {
+          showToast(
+            m(
+              `${released} repasse(s) em custodia foram liberados.`,
+              `${released} escrow payout(s) were released.`,
+              `${released} pago(s) en custodia fueron liberados.`,
+              `${released} pagamento/i in custodia sono stati rilasciati.`
+            ),
+            true
+          );
+        }
+
+        if (recurring > 0) {
+          showToast(
+            m(
+              `${recurring} cobranca(s) mensais foram processadas.`,
+              `${recurring} recurring charge(s) were processed.`,
+              `${recurring} cobro(s) mensuales fueron procesados.`,
+              `${recurring} addebito/i mensili sono stati elaborati.`
+            ),
+            true
+          );
+        }
+
+        if (claimed > 0) {
+          showToast(
+            m(
+              `${claimed} transferencia(s) pendente(s) foram creditadas na sua carteira.`,
+              `${claimed} pending transfer(s) were credited to your wallet.`,
+              `${claimed} transferencia(s) pendiente(s) fueron acreditadas en tu cartera.`,
+              `${claimed} trasferimento/i in attesa sono stati accreditati sul tuo wallet.`
+            ),
+            true
+          );
+        }
+      } catch (error) {
+        console.error('[BoaWallet] Platform background sync failed', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, userHandle]);
+
   // --- Auth ---
-  const handleLogin = async () => {
+  const handleLogin = async (method: 'google' | 'web3' = 'google') => {
     setLoggingIn(true);
+    setLoginMethod(method);
     try {
-      if (Capacitor.isNativePlatform()) {
-        // Step 1: Try Firebase native Google sign-in (fastest, no browser redirect)
+      if (method === 'web3') {
+        if (!canUseWeb3Login) {
+          showToast(m('Nenhuma carteira web3 encontrada neste dispositivo.', 'No Web3 wallet found on this device.', 'No se encontro una wallet web3 en este dispositivo.', 'Nessun wallet web3 trovato su questo dispositivo.'), false);
+          return;
+        }
+
+        const chain = (window as any).ethereum ? 'ethereum' : 'solana';
+        const { error } = await supabase.auth.signInWithWeb3({
+          chain,
+          statement: 'Sign in to BoaWallet',
+        } as any);
+
+        if (error) {
+          console.error('[BoaWallet] Web3 login failed:', error.message);
+          showToast(m('Erro ao conectar a carteira. Tente novamente.', 'Wallet login failed. Please try again.', 'Error al conectar la wallet. Intentalo de nuevo.', 'Errore di accesso con wallet. Riprova.'), false);
+          return;
+        }
+
+        showToast(m('Carteira conectada!', 'Wallet connected!', 'Wallet conectada!', 'Wallet collegato!'), true);
+        return;
+      }
+      if (isNativePlatform) {
+        // Native-only Google sign-in via Firebase — no browser redirect
         let idToken: string | null = null;
         try {
-          console.log('[BoaWallet] Trying Firebase native sign-in...');
+          console.log('[BoaWallet] Firebase native sign-in...');
           const result = await FirebaseAuthentication.signInWithGoogle();
           idToken = result.credential?.idToken || null;
+
+          // Fallback: Play Store App Signing usa chave diferente, credential.idToken pode vir null.
+          // Nesse caso, pega o token diretamente do usuário Firebase autenticado.
+          if (!idToken) {
+            console.warn('[BoaWallet] credential.idToken null — tentando getIdToken fallback...');
+            const tokenResult = await FirebaseAuthentication.getIdToken({ forceRefresh: true });
+            idToken = tokenResult.token || null;
+          }
         } catch (fbErr: any) {
-          console.warn('[BoaWallet] Firebase native sign-in unavailable, will use browser OAuth:', fbErr.message);
-        }
-
-        if (idToken) {
-          console.log('[BoaWallet] Firebase token received, authenticating with Supabase...');
-          try {
-            const credential = GoogleAuthProvider.credential(idToken);
-            await signInWithCredential(firebaseAuth, credential);
-          } catch (fbSyncErr) {
-            console.warn('[BoaWallet] Firebase web SDK sync failed (non-critical):', fbSyncErr);
-          }
-
-          const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
-          if (error) {
-            console.warn('[BoaWallet] signInWithIdToken failed, falling back to browser OAuth:', error.message);
-            idToken = null;
+          console.error('[BoaWallet] Firebase native sign-in failed:', fbErr.message, fbErr.code);
+          // DEVELOPER_ERROR / code 10 = SHA-1 não registrado no Firebase (comum na Play Store)
+          const isDeveloperError =
+            fbErr.code === '10' ||
+            String(fbErr.message).includes('DEVELOPER_ERROR') ||
+            String(fbErr.message).includes('ApiException: 10');
+          if (isDeveloperError) {
+            showToast(
+              m(
+                'Erro de configuração Google (SHA-1). Contate o suporte.',
+                'Google config error (SHA-1 mismatch). Contact support.',
+                'Error de configuración Google. Contacta soporte.',
+                'Errore configurazione Google. Contatta supporto.'
+              ),
+              false
+            );
           } else {
-            console.log('[BoaWallet] Supabase session established via Firebase token.');
-            showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
-            return;
+            showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
           }
+          return;
         }
 
-        // Step 2: Browser-based OAuth fallback
-        console.log('[BoaWallet] Opening browser for Supabase OAuth...');
-        showToast(m('Abrindo o navegador para login...', 'Opening browser to sign in...', 'Abriendo navegador para iniciar sesión...', 'Apertura del browser per accedere...'), true);
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: { redirectTo: 'io.boa.wallet://auth', skipBrowserRedirect: false },
-        });
-        if (error) throw error;
+        if (!idToken) {
+          console.error('[BoaWallet] idToken null após todas as tentativas');
+          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+          return;
+        }
+
+        // Sync with Firebase web SDK (non-critical)
+        try {
+          await signInWithCredential(firebaseAuth, GoogleAuthProvider.credential(idToken));
+        } catch { /* non-critical */ }
+
+        const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+        if (error) {
+          console.error('[BoaWallet] Supabase token exchange failed:', error.message);
+          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+          return;
+        }
+
+        console.log('[BoaWallet] Supabase session established via Firebase token.');
+        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+        // Avisa o relógio que o usuário está autenticado (dados chegam após sync)
+        void syncToWatch(null, '', [], baseCurrency, exchangeRates);
 
       } else {
         // Web platform
@@ -372,20 +633,31 @@ export default function App() {
       showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
     } finally {
       setLoggingIn(false);
+      setLoginMethod(null);
     }
   };
 
   const handleLogout = async () => {
+    setShowProfileMenu(false);
+    // Salva cache local antes de limpar
+    if (user) {
+      localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subscriptions));
+      localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjustments));
+    }
+    // Limpa estado local PRIMEIRO para garantir UX imediata
+    setUserName('');
+    setSubscriptions([]);
+    setReceivedSubscriptions([]);
+    setAdjustments([]);
+    // Avisa o relógio que o usuário saiu
+    void syncToWatch(null, '', [], baseCurrency, exchangeRates);
+    // Encerra sessões no servidor (local scope = sem chamada de rede)
     try {
-      if (user) {
-        localStorage.setItem('subscriptions_' + user.id, JSON.stringify(subscriptions));
-        localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjustments));
-      }
-      await supabase.auth.signOut();
-      setUserName('');
-      setSubscriptions([]);
-      setAdjustments([]);
-    } catch (error) { console.error('Logout error', error); }
+      await firebaseSignOut(firebaseAuth).catch(() => {});
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch (error) {
+      console.error('Logout error', error);
+    }
   };
   
   // FULL row — all known columns (requires ALTER TABLE from supabase_setup.sql to have been run)
@@ -398,8 +670,16 @@ export default function App() {
     emoji: sub.emoji,
     logoUrl: sub.logoUrl,
     bankLogoUrl: sub.bankLogoUrl,
+    isPublic: sub.isPublic,
+    allowPublicParticipants: sub.allowPublicParticipants,
+    publicSharePriceSats: sub.publicSharePriceSats,
+    publicPaymentType: sub.publicPaymentType,
+    publicCredentialsEnabled: sub.publicCredentialsEnabled,
     category: sub.category,
-    notes: sub.notes,
+    notes: embedCredentialsInNotes(sub.notes, {
+      username: sub.serviceUsername,
+      password: sub.servicePassword,
+    }),
     status: sub.status,
     costAmount: sub.costAmount,
     costCurrency: sub.costCurrency,
@@ -434,20 +714,45 @@ export default function App() {
     updatedAt: sub.updatedAt,
   });
 
+  // Compatibility row: keeps the legacy mixed schema already used by the app,
+  // but writes the marketplace fields using the snake_case migration names.
+  const toMarketplaceCompatibleSupabaseRow = (sub: Subscription, userId: string) => {
+    const row = {
+      ...toSupabaseRow(sub, userId),
+      allow_public_participants: sub.allowPublicParticipants,
+      public_share_price_sats: sub.publicSharePriceSats,
+      public_payment_type: sub.publicPaymentType,
+      public_credentials_enabled: sub.publicCredentialsEnabled,
+    } as Record<string, any>;
+
+    delete row.allowPublicParticipants;
+    delete row.publicSharePriceSats;
+    delete row.publicPaymentType;
+    delete row.publicCredentialsEnabled;
+
+    return row;
+  };
+
   // MINIMAL row — only the original columns guaranteed to exist in ALL Supabase installs
   const toMinimalSupabaseRow = (sub: Subscription, userId: string) => ({
     id: sub.id,
     user_id: userId,
     userId: (sub as any).userId || (sub as any).user_id || userId,
     name: sub.name,
+    logoUrl: sub.logoUrl,
     emoji: sub.emoji,
+    isPublic: sub.isPublic,
     category: sub.category,
-    notes: sub.notes,
+    notes: embedCredentialsInNotes(sub.notes, {
+      username: sub.serviceUsername,
+      password: sub.servicePassword,
+    }),
     status: sub.status,
     costAmount: sub.costAmount,
     costCurrency: sub.costCurrency,
     billingCycle: sub.billingCycle,
     dueDate: sub.dueDate,
+    paymentSource: sub.paymentSource,
     paymentMethod: sub.paymentMethod,
     isPromotional: sub.isPromotional,
     promoEndDate: sub.promoEndDate,
@@ -473,23 +778,60 @@ export default function App() {
   });
 
   // Two-tier Supabase save: tries full row first, falls back to minimal if column errors
-  const saveToSupabase = async (rows: any[], minimalRows: any[]): Promise<'ok' | 'partial' | 'fail'> => {
+  const saveToSupabase = async (
+    rows: any[],
+    minimalRows: any[],
+    compatibilityRows?: any[]
+  ): Promise<'ok' | 'partial' | 'fail'> => {
     try {
-      await supabase.auth.refreshSession();
+      await withTimeout(supabase.auth.refreshSession(), 3000, 'Session refresh timed out');
     } catch { /* session refresh best-effort */ }
 
-    // Tier 1: full columns
-    const { error: e1 } = await supabase.from('subscriptions').upsert(rows);
+    let e1: any;
+    try {
+      const result = await withTimeout(
+        supabase.from('subscriptions').upsert(rows),
+        6000,
+        'Subscription save timed out'
+      );
+      e1 = result.error;
+    } catch (error) {
+      console.error('[BoaWallet] Full upsert failed with timeout/error:', error);
+      return 'fail';
+    }
+
     if (!e1) return 'ok';
 
     const isColumnError = e1.code === '42703' || e1.message?.toLowerCase().includes('column');
     console.warn('[BoaWallet] Full upsert failed:', e1.message, '| column error?', isColumnError);
 
     if (isColumnError) {
+      if (compatibilityRows?.length) {
+        try {
+          const { error: eCompat } = await withTimeout(
+            supabase.from('subscriptions').upsert(compatibilityRows),
+            6000,
+            'Compatibility subscription save timed out'
+          );
+          if (!eCompat) return 'ok';
+          console.warn('[BoaWallet] Compatibility upsert failed:', eCompat.message);
+        } catch (error) {
+          console.error('[BoaWallet] Compatibility upsert failed with timeout/error:', error);
+        }
+      }
+
       // Tier 2: minimal columns (always works with original table schema)
-      const { error: e2 } = await supabase.from('subscriptions').upsert(minimalRows);
-      if (!e2) return 'partial'; // saved, but missing some extended fields
-      console.error('[BoaWallet] Minimal upsert also failed:', e2.message);
+      try {
+        const { error: e2 } = await withTimeout(
+          supabase.from('subscriptions').upsert(minimalRows),
+          6000,
+          'Minimal subscription save timed out'
+        );
+        if (!e2) return 'partial'; // saved, but missing some extended fields
+        console.error('[BoaWallet] Minimal upsert also failed:', e2.message);
+      } catch (error) {
+        console.error('[BoaWallet] Minimal upsert also failed with timeout/error:', error);
+      }
     }
     return 'fail';
   };
@@ -505,12 +847,33 @@ export default function App() {
       return new Date().toISOString();
     };
 
+    const parsedNotes = stripCredentialsFromNotes(s.notes);
+
     return {
       ...s,
       id: String(s.id || Date.now() + Math.random()),
       name: s.name || '',
+      logoUrl: normalizeLogoUrl(s.logoUrl, s.name || ''),
       emoji: s.emoji || '📺',
       category: s.category || 'Outros',
+      notes: parsedNotes.notes,
+      serviceUsername: typeof s.serviceUsername === 'string' && s.serviceUsername.trim()
+        ? s.serviceUsername.trim()
+        : parsedNotes.credentials?.username,
+      servicePassword: typeof s.servicePassword === 'string' && s.servicePassword.trim()
+        ? s.servicePassword.trim()
+        : parsedNotes.credentials?.password,
+      isPublic: typeof s.isPublic === 'boolean' ? s.isPublic : !!s.is_public,
+      allowPublicParticipants: typeof s.allowPublicParticipants === 'boolean'
+        ? s.allowPublicParticipants
+        : !!s.allow_public_participants,
+      publicSharePriceSats: parseInt(String(s.publicSharePriceSats ?? s.public_share_price_sats ?? 0), 10) || 0,
+      publicPaymentType: (s.publicPaymentType ?? s.public_payment_type) === 'monthly' ? 'monthly' : 'onetime',
+      publicCredentialsEnabled: typeof s.publicCredentialsEnabled === 'boolean'
+        ? s.publicCredentialsEnabled
+        : typeof s.public_credentials_enabled === 'boolean'
+          ? s.public_credentials_enabled
+        : !!(parsedNotes.credentials?.password || parsedNotes.credentials?.username),
       costAmount: parseFloat(s.costAmount) || 0,
       costCurrency: (s.costCurrency as Currency) || 'BRL',
       billingCycle: (s.billingCycle as BillingCycle) || 'Monthly',
@@ -519,17 +882,13 @@ export default function App() {
       updatedAt: normalizeDate(s.updatedAt || s.createdAt),
       user_id: s.user_id || s.userId,
       userId: s.userId || s.user_id,
+      bankLogoUrl: s.bankLogoUrl || '',
       subItems: (s.subItems || []).map((i: any) => ({
         id: String(i.id || Math.random()),
         name: i.name || '',
         costAmount: parseFloat(i.costAmount) || 0
       })),
-      sharedWith: (s.sharedWith || []).map((m: any) => ({
-        ...m,
-        id: String(m.id || Math.random()),
-        amount: parseFloat(m.amount) || 0,
-        currency: (m.currency as Currency) || s.costCurrency || 'BRL'
-      })),
+      sharedWith: (s.sharedWith || []).map((m: any) => normalizeSharedMember(m, ((m?.currency as Currency) || (s.costCurrency as Currency) || 'BRL'))),
       hasIncome: !!s.hasIncome,
       hasCashback: !!s.hasCashback,
       hasEarlyPayDiscount: !!s.hasEarlyPayDiscount,
@@ -537,7 +896,548 @@ export default function App() {
     } as Subscription;
   };
 
+  const normalizeMembersForSubscription = (subscription: Partial<Subscription>): SharedMember[] => {
+    const baseAmount = Number(subscription.costAmount) || 0;
+    const fallbackCurrency = (subscription.costCurrency as Currency) || 'BRL';
+
+    return (subscription.sharedWith || []).map((member) =>
+      normalizeSharedMember(
+        {
+          ...member,
+          amount: resolveSharedMemberAmount(member, baseAmount),
+        },
+        (member.currency as Currency) || fallbackCurrency
+      )
+    );
+  };
+
+  const calculateConfirmedSharedIncome = (
+    members: SharedMember[],
+    incomeCurrency: Currency,
+    fallbackCurrency: Currency
+  ) => {
+    return members.reduce((total, member) => {
+      const isConfirmed = !member.userId || !!member.accepted;
+      if (!isConfirmed) return total;
+
+      return total + convertCurrency(
+        Number(member.amount || 0),
+        member.currency || fallbackCurrency,
+        incomeCurrency,
+        exchangeRates
+      );
+    }, 0);
+  };
+
+  const upsertFriendships = async (currentUserId: string, friendIds: string[]) => {
+    const uniqueFriendIds = Array.from(new Set(friendIds.filter((friendId) => friendId && friendId !== currentUserId)));
+    if (uniqueFriendIds.length === 0) return;
+
+    const rows = uniqueFriendIds.map((friendId) => {
+      const [userOne, userTwo] = sortFriendPair(currentUserId, friendId);
+      return {
+        user_one: userOne,
+        user_two: userTwo,
+        created_by: currentUserId,
+      };
+    });
+
+    await withTimeout(
+      supabase.from('friendships').upsert(rows, {
+        onConflict: 'user_one,user_two',
+        ignoreDuplicates: true,
+      } as any),
+      4000,
+      'Friendship upsert timed out'
+    );
+  };
+
+  const refreshFriends = async (currentUserId?: string) => {
+    if (!currentUserId) {
+      setFriends([]);
+      setFriendsLoading(false);
+      return;
+    }
+
+    const cachedFriends = readFriendsCache(currentUserId);
+    if (cachedFriends.length > 0) {
+      setFriends(cachedFriends);
+      hydrateUserSearchCache(cachedFriends);
+      setFriendsLoading(false);
+    } else {
+      setFriendsLoading(true);
+    }
+
+    try {
+      const { data: rows } = await withTimeout(
+        supabase
+          .from('friendships')
+          .select('id,user_one,user_two,created_by,created_at')
+          .or(`user_one.eq.${currentUserId},user_two.eq.${currentUserId}`)
+          .order('created_at', { ascending: false }),
+        4500,
+        'Friends request timed out'
+      );
+
+      const friendshipRows = (rows as FriendshipRow[] | null) || [];
+      const friendIds = Array.from(new Set(friendshipRows.map((row) => row.user_one === currentUserId ? row.user_two : row.user_one)));
+
+      if (friendIds.length === 0) {
+        setFriends([]);
+        writeFriendsCache(currentUserId, []);
+        return;
+      }
+
+      const { data: profiles } = await withTimeout(
+        supabase
+          .from('users')
+          .select('id,name,username')
+          .in('id', friendIds),
+        4500,
+        'Friend profiles request timed out'
+      );
+
+      const profilesById = Object.fromEntries(
+        (((profiles as FriendProfile[] | null) || []).map((profile) => [profile.id, profile]))
+      ) as Record<string, FriendProfile>;
+
+      const nextFriends = friendshipRows
+        .map((row) => {
+          const friendId = row.user_one === currentUserId ? row.user_two : row.user_one;
+          const profile = profilesById[friendId];
+          return profile
+            ? {
+                ...profile,
+                createdAt: row.created_at,
+              }
+            : null;
+        })
+        .filter(Boolean) as FriendProfile[];
+
+      nextFriends.sort((left, right) => {
+        const leftTime = new Date(left.createdAt || 0).getTime();
+        const rightTime = new Date(right.createdAt || 0).getTime();
+        return rightTime - leftTime;
+      });
+
+      hydrateUserSearchCache(nextFriends);
+      setFriends(nextFriends);
+      writeFriendsCache(currentUserId, nextFriends);
+    } catch (error) {
+      console.error('[BoaWallet] Failed to load friendships', error);
+      if (cachedFriends.length === 0) {
+        setFriends([]);
+      }
+    } finally {
+      setFriendsLoading(false);
+    }
+  };
+
+  const handleAddFriend = async (friend: { id: string; name?: string; username: string }) => {
+    if (!user) return false;
+
+    const optimisticFriend: FriendProfile = {
+      id: friend.id,
+      name: friend.name,
+      username: friend.username.toLowerCase(),
+      createdAt: new Date().toISOString(),
+    };
+
+    hydrateUserSearchCache([friend]);
+    setFriends((currentFriends) => {
+      const nextFriends = [
+        optimisticFriend,
+        ...currentFriends.filter((currentFriend) => currentFriend.id !== friend.id),
+      ];
+      writeFriendsCache(user.id, nextFriends);
+      return nextFriends;
+    });
+
+    try {
+      await upsertFriendships(user.id, [friend.id]);
+      void refreshFriends(user.id);
+      showToast(
+        m(
+          `@${friend.username} adicionado aos amigos!`,
+          `@${friend.username} added to friends!`,
+          `@${friend.username} agregado a amigos!`,
+          `@${friend.username} aggiunto agli amici!`
+        ),
+        true
+      );
+      return true;
+    } catch (error) {
+      console.error('[BoaWallet] Failed to add friend manually', error);
+      showToast(
+        m(
+          'Nao foi possivel adicionar o amigo agora.',
+          'Could not add the friend right now.',
+          'No se pudo agregar al amigo ahora.',
+          'Non e stato possibile aggiungere l amico ora.'
+        ),
+        false
+      );
+      return false;
+    }
+  };
+
+  const syncLinkedMembersForSubscription = async (subscription: Subscription, ownerId: string) => {
+    const linkedMembers = (subscription.sharedWith || []).filter((member) => !!member.userId);
+    const linkedMemberIds = linkedMembers
+      .map((member) => member.userId)
+      .filter(Boolean) as string[];
+
+    let existingRows: Array<Record<string, any>> | null = null;
+    const { data: fullExistingRows, error: fullExistingRowsError } = await supabase
+      .from('subscription_members')
+      .select('member_id,accepted,payment_mode,payment_type,bitcoin_amount_sats,payment_status,credentials_unlocked,share_credentials,platform_fee_sats,guarantee_sats,last_paid_at,next_payment_due_at,pending_release_until,latest_payment_event_id,public_join')
+      .eq('subscription_id', subscription.id)
+      .eq('owner_id', ownerId);
+
+    if (fullExistingRowsError) {
+      const isColumnError = fullExistingRowsError.code === '42703' || fullExistingRowsError.message?.toLowerCase().includes('column');
+      if (!isColumnError) throw fullExistingRowsError;
+
+      const { data: minimalExistingRows, error: minimalExistingRowsError } = await supabase
+        .from('subscription_members')
+        .select('member_id,accepted')
+        .eq('subscription_id', subscription.id)
+        .eq('owner_id', ownerId);
+
+      if (minimalExistingRowsError) throw minimalExistingRowsError;
+      existingRows = (minimalExistingRows as Array<Record<string, any>> | null) || [];
+    } else {
+      existingRows = (fullExistingRows as Array<Record<string, any>> | null) || [];
+    }
+
+    const existingRowsByMemberId = new Map(
+      ((existingRows || []).map((row) => [String(row.member_id), row]))
+    );
+
+    const rowsToUpsert = linkedMembers.map((member) => ({
+      ...(existingRowsByMemberId.get(String(member.userId)) || {}),
+      subscription_id: subscription.id,
+      owner_id: ownerId,
+      member_id: member.userId,
+      amount: Number(member.amount || 0),
+      currency: member.currency || subscription.costCurrency,
+      accepted: !!(existingRowsByMemberId.get(String(member.userId))?.accepted || member.accepted),
+      payment_mode: member.paymentMode || existingRowsByMemberId.get(String(member.userId))?.payment_mode || 'immediate',
+      payment_type: member.paymentType || existingRowsByMemberId.get(String(member.userId))?.payment_type || 'onetime',
+      payment_status: member.paymentStatus || existingRowsByMemberId.get(String(member.userId))?.payment_status || 'unpaid',
+      bitcoin_amount_sats: Number(member.bitcoinAmountSats ?? existingRowsByMemberId.get(String(member.userId))?.bitcoin_amount_sats ?? 0),
+      share_credentials: !!(member.shareCredentials ?? existingRowsByMemberId.get(String(member.userId))?.share_credentials),
+      credentials_unlocked: !!(member.credentialsUnlocked ?? existingRowsByMemberId.get(String(member.userId))?.credentials_unlocked),
+      platform_fee_sats: Number(member.platformFeeSats ?? existingRowsByMemberId.get(String(member.userId))?.platform_fee_sats ?? 0),
+      guarantee_sats: Number(member.guaranteeSats ?? existingRowsByMemberId.get(String(member.userId))?.guarantee_sats ?? 0),
+      last_paid_at: member.lastPaidAt || existingRowsByMemberId.get(String(member.userId))?.last_paid_at || null,
+      next_payment_due_at: member.nextPaymentDueAt || existingRowsByMemberId.get(String(member.userId))?.next_payment_due_at || null,
+      pending_release_until: member.pendingReleaseUntil || existingRowsByMemberId.get(String(member.userId))?.pending_release_until || null,
+      latest_payment_event_id: member.latestPaymentEventId || existingRowsByMemberId.get(String(member.userId))?.latest_payment_event_id || null,
+      public_join: !!(member.publicJoin ?? existingRowsByMemberId.get(String(member.userId))?.public_join),
+    }));
+
+    const removedIds = (((existingRows as { member_id: string }[] | null) || [])
+      .map((row) => row.member_id)
+      .filter((memberId) => !linkedMemberIds.includes(memberId)));
+
+    if (rowsToUpsert.length > 0) {
+      const { error } = await supabase.from('subscription_members').upsert(rowsToUpsert, {
+        onConflict: 'subscription_id,member_id',
+      } as any);
+      if (error) {
+        const isColumnError = error.code === '42703' || error.message?.toLowerCase().includes('column');
+        if (!isColumnError) throw error;
+
+        const minimalRowsToUpsert = linkedMembers.map((member) => ({
+          subscription_id: subscription.id,
+          owner_id: ownerId,
+          member_id: member.userId,
+          amount: Number(member.amount || 0),
+          currency: member.currency || subscription.costCurrency,
+          accepted: !!(existingRowsByMemberId.get(String(member.userId))?.accepted || member.accepted),
+        }));
+
+        const { error: minimalError } = await supabase.from('subscription_members').upsert(minimalRowsToUpsert, {
+          onConflict: 'subscription_id,member_id',
+        } as any);
+        if (minimalError) throw minimalError;
+      }
+
+      hydrateUserSearchCache(
+        linkedMembers.map((member) => ({
+          id: String(member.userId),
+          name: member.name,
+          username: member.username,
+        }))
+      );
+      await upsertFriendships(ownerId, linkedMemberIds);
+      void refreshFriends(ownerId);
+    }
+
+    if (removedIds.length > 0) {
+      const { error } = await supabase
+        .from('subscription_members')
+        .delete()
+        .eq('subscription_id', subscription.id)
+        .eq('owner_id', ownerId)
+        .in('member_id', removedIds);
+
+      if (error) throw error;
+    }
+  };
+
+  const persistOwnedSubscription = async (
+    subscription: Subscription,
+    options?: {
+      closeForm?: boolean;
+      successMessage?: string;
+      localOnlyMessage?: string;
+      silentSuccess?: boolean;
+    }
+  ) => {
+    const closeForm = options?.closeForm ?? false;
+
+    if (!user) {
+      const normalizedSub = normalizeSubscription(subscription);
+      const updatedLocalSubscriptions = subscriptions.find((item) => item.id === normalizedSub.id)
+        ? subscriptions.map((item) => item.id === normalizedSub.id ? normalizedSub : item)
+        : [...subscriptions, normalizedSub];
+      setSubscriptions(updatedLocalSubscriptions);
+      localStorage.setItem('subscriptions', JSON.stringify(updatedLocalSubscriptions));
+
+      if (!options?.silentSuccess) {
+        showToast(options?.successMessage || m('Item salvo!', 'Item saved!', 'Â¡Elemento guardado!', 'Elemento salvato!'), true);
+      }
+
+      if (closeForm) {
+        setIsFormOpen(false);
+        setEditingSub(undefined);
+      }
+      return normalizedSub;
+    }
+
+    const isNew = !subscriptions.find((item) => item.id === subscription.id);
+    const normalizedSharedWith = normalizeMembersForSubscription(subscription);
+    const incomeCurrency = ((subscription.incomeCurrency as Currency) || (subscription.costCurrency as Currency) || 'BRL');
+    const sharedIncomeTotal = calculateConfirmedSharedIncome(
+      normalizedSharedWith,
+      incomeCurrency,
+      (subscription.costCurrency as Currency) || 'BRL'
+    );
+
+    const fullSub = normalizeSubscription({
+      ...subscription,
+      sharedWith: normalizedSharedWith,
+      hasIncome: normalizedSharedWith.length > 0 ? true : subscription.hasIncome,
+      incomeCurrency,
+      incomeAmount: normalizedSharedWith.length > 0 ? sharedIncomeTotal : subscription.incomeAmount,
+      user_id: user.id,
+      createdAt: isNew ? new Date().toISOString() : subscription.createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const updatedSubscriptions = isNew
+      ? [...subscriptions, fullSub]
+      : subscriptions.map((item) => item.id === fullSub.id ? fullSub : item);
+
+    setSubscriptions(updatedSubscriptions);
+    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updatedSubscriptions));
+    localStorage.setItem('subscriptions', JSON.stringify(updatedSubscriptions));
+
+    const result = await saveToSupabase(
+      [toSupabaseRow(fullSub, user.id)],
+      [toMinimalSupabaseRow(fullSub, user.id)],
+      [toMarketplaceCompatibleSupabaseRow(fullSub, user.id)]
+    );
+
+    if (result !== 'fail') {
+      await syncLinkedMembersForSubscription(fullSub, user.id);
+      setDoc(doc(db, 'subscriptions', fullSub.id), sanitizeForFirebase(fullSub) as any).catch(() => {});
+      if (!options?.silentSuccess) {
+        showToast(options?.successMessage || m('Item salvo!', 'Item saved!', '¡Elemento guardado!', 'Elemento salvato!'), true);
+      }
+    } else {
+      showToast(options?.localOnlyMessage || m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
+    }
+
+    if (closeForm) {
+      setIsFormOpen(false);
+      setEditingSub(undefined);
+    }
+
+    // Sincroniza com o app do relógio em background
+    void syncToWatch(user, userHandle, updatedSubscriptions, baseCurrency, exchangeRates);
+
+    return fullSub;
+  };
+
+  const mergeOwnedSubscriptionsWithShareRows = (
+    ownedSubscriptions: Subscription[],
+    outgoingRows: SubscriptionMemberRow[],
+    profilesById: Record<string, FriendProfile>
+  ): Subscription[] => {
+    return ownedSubscriptions.map((subscription) => {
+      const baseMembers = subscription.sharedWith || [];
+      const manualMembers = baseMembers
+        .filter((member) => !member.userId)
+        .map((member) => normalizeSharedMember(member, member.currency || subscription.costCurrency));
+
+      const linkedMembers = outgoingRows
+        .filter((row) => row.subscription_id === subscription.id)
+        .map((row) => {
+          const profile = profilesById[row.member_id];
+          const existing = findSharedMemberForUser(baseMembers, row.member_id, profile?.username);
+          const fallbackCurrency = ((row.currency as Currency) || existing?.currency || subscription.costCurrency);
+
+          return normalizeSharedMember(
+            {
+              ...existing,
+              id: row.member_id,
+              userId: row.member_id,
+              username: profile?.username || existing?.username,
+              name: profile?.name || existing?.name || profile?.username || existing?.username || 'Usuario',
+              amount: Number(row.amount ?? existing?.amount ?? 0),
+              currency: fallbackCurrency,
+              paymentDate: existing?.paymentDate || subscription.dueDate,
+              info: existing?.info || '',
+              accepted: !!row.accepted,
+              shareCredentials: typeof row.share_credentials === 'boolean'
+                ? row.share_credentials
+                : existing?.shareCredentials,
+              paymentMode: row.payment_mode || existing?.paymentMode,
+              paymentType: row.payment_type || existing?.paymentType,
+              paymentStatus: row.payment_status || existing?.paymentStatus,
+              bitcoinAmountSats: Number(row.bitcoin_amount_sats ?? existing?.bitcoinAmountSats ?? 0),
+              platformFeeSats: Number(row.platform_fee_sats ?? existing?.platformFeeSats ?? 0),
+              guaranteeSats: Number(row.guarantee_sats ?? existing?.guaranteeSats ?? 0),
+              credentialsUnlocked: typeof row.credentials_unlocked === 'boolean'
+                ? row.credentials_unlocked
+                : existing?.credentialsUnlocked,
+              lastPaidAt: row.last_paid_at || existing?.lastPaidAt,
+              nextPaymentDueAt: row.next_payment_due_at || existing?.nextPaymentDueAt,
+              pendingReleaseUntil: row.pending_release_until || existing?.pendingReleaseUntil,
+              latestPaymentEventId: row.latest_payment_event_id || existing?.latestPaymentEventId,
+              publicJoin: typeof row.public_join === 'boolean' ? row.public_join : existing?.publicJoin,
+            },
+            fallbackCurrency
+          );
+        });
+
+      const mergedSharedWith = [...manualMembers, ...linkedMembers];
+      const incomeCurrency = (subscription.incomeCurrency as Currency) || (subscription.costCurrency as Currency) || 'BRL';
+
+      return normalizeSubscription({
+        ...subscription,
+        sharedWith: mergedSharedWith,
+        hasIncome: mergedSharedWith.length > 0 || subscription.hasIncome,
+        incomeCurrency,
+        incomeAmount: mergedSharedWith.length > 0
+          ? calculateConfirmedSharedIncome(
+              mergedSharedWith,
+              incomeCurrency,
+              (subscription.costCurrency as Currency) || 'BRL'
+            )
+          : subscription.incomeAmount,
+      });
+    });
+  };
+
+  const buildReceivedSubscriptions = (
+    incomingRows: SubscriptionMemberRow[],
+    sharedSourceSubscriptions: Subscription[],
+    profilesById: Record<string, FriendProfile>,
+    currentUserId: string
+  ): Subscription[] => {
+    const sourceById = Object.fromEntries(sharedSourceSubscriptions.map((subscription) => [subscription.id, subscription]));
+
+    return incomingRows
+      .filter((row) => row.accepted)
+      .map((row) => {
+        const source = sourceById[row.subscription_id];
+        const owner = profilesById[row.owner_id];
+        const linkedMember = source
+          ? findSharedMemberForUser(source.sharedWith, currentUserId, undefined)
+          : undefined;
+
+        const fallbackCurrency = ((row.currency as Currency) || linkedMember?.currency || source?.costCurrency || 'BRL');
+        const shareCredentials = typeof row.share_credentials === 'boolean'
+          ? row.share_credentials
+          : linkedMember?.shareCredentials;
+        const credentialsUnlocked = typeof row.credentials_unlocked === 'boolean'
+          ? row.credentials_unlocked
+          : !!(row.accepted && (row.payment_mode !== 'bitcoin') && shareCredentials);
+        const shouldShareCredentials = !!(shareCredentials && credentialsUnlocked);
+        const paymentStatus = row.payment_status || (row.payment_type === 'monthly' ? 'active' : 'paid');
+        const accessNote = shouldShareCredentials
+          ? undefined
+          : 'O usuario nao disponibilizou a senha';
+        const sharedSubscription = normalizeSubscription({
+          ...(source || {}),
+          id: `shared:${row.id}`,
+          sourceShareId: row.id,
+          sourceSubscriptionId: row.subscription_id,
+          user_id: currentUserId,
+          userId: currentUserId,
+          isSharedIncoming: true,
+          sharedOwnerId: row.owner_id,
+          sharedOwnerName: owner?.name,
+          sharedOwnerUsername: owner?.username,
+          name: source?.name || 'Assinatura compartilhada',
+          emoji: source?.emoji || '👥',
+          category: source?.category || 'Compartilhado',
+          logoUrl: source?.logoUrl || '',
+          costAmount: Number(row.amount ?? linkedMember?.amount ?? source?.costAmount ?? 0),
+          costCurrency: fallbackCurrency,
+          billingCycle: source?.billingCycle || 'Monthly',
+          dueDate: linkedMember?.paymentDate || source?.dueDate || 1,
+          dueMonth: source?.billingCycle === 'Yearly' ? source?.dueMonth : undefined,
+          paymentMethod: source?.paymentMethod || 'Outro',
+          paymentSource: owner?.username ? `@${owner.username}` : owner?.name || 'Compartilhado',
+          bankLogoUrl: '',
+          notes: accessNote || (
+            owner?.username
+            ? `Compartilhado por @${owner.username}`
+            : owner?.name
+              ? `Compartilhado por ${owner.name}`
+              : source?.notes
+          ),
+          hasIncome: false,
+          incomeAmount: 0,
+          incomeCurrency: fallbackCurrency,
+          incomeFrequency: source?.billingCycle || 'Monthly',
+          incomeSourceDescription: '',
+          hasCashback: false,
+          cashbackPercentage: 0,
+          subItems: [],
+          serviceUsername: shouldShareCredentials ? source?.serviceUsername : undefined,
+          servicePassword: shouldShareCredentials ? source?.servicePassword : undefined,
+          sharedWith: source?.sharedWith || [],
+          status: paymentStatus === 'overdue' ? 'cancelled_temporary' : source?.status,
+          createdAt: source?.createdAt || row.created_at,
+          updatedAt: source?.updatedAt || row.created_at,
+        });
+
+        return sharedSubscription;
+      });
+  };
+
   const handleSave = async (sub: Subscription) => {
+    setIsFormOpen(false);
+    setEditingSub(undefined);
+
+    try {
+      await persistOwnedSubscription(sub, {
+        successMessage: m('Item salvo!', 'Item saved!', 'Â¡Elemento guardado!', 'Elemento salvato!'),
+        localOnlyMessage: m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'),
+      });
+    } catch (error: any) {
+      console.error('Save error', error);
+      showToast(m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
+    }
+
+    return;
+
     if (user) {
       try {
         const isNew = !subscriptions.find(s => s.id === sub.id);
@@ -559,7 +1459,8 @@ export default function App() {
         // 2. Supabase two-tier save
         const result = await saveToSupabase(
           [toSupabaseRow(fullSub, user.id)],
-          [toMinimalSupabaseRow(fullSub, user.id)]
+          [toMinimalSupabaseRow(fullSub, user.id)],
+          [toMarketplaceCompatibleSupabaseRow(fullSub, user.id)]
         );
         if (result === 'fail') {
           showToast(m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
@@ -568,30 +1469,200 @@ export default function App() {
         }
 
         // 3. Firebase (secondary) — silent
-        setDoc(doc(db, 'subscriptions', fullSub.id), fullSub).catch(() => {});
+        setDoc(doc(db, 'subscriptions', fullSub.id), sanitizeForFirebase(fullSub) as any).catch(() => {});
       } catch (error: any) {
         console.error('Save error', error);
         showToast(m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
       }
     } else {
-      setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? sub : s) : [...subs, sub]);
+      const normalizedSub = normalizeSubscription(sub);
+      setSubscriptions(subs => subs.find(s => s.id === sub.id) ? subs.map(s => s.id === sub.id ? normalizedSub : s) : [...subs, normalizedSub]);
     }
     setIsFormOpen(false);
     setEditingSub(undefined);
   };
 
+  const handleSetMemberPaid = async (subscriptionId: string, memberId: string, paid: boolean) => {
+    const targetSubscription = subscriptions.find((subscription) => subscription.id === subscriptionId);
+    if (!targetSubscription) return;
+
+    const updatedSubscription = normalizeSubscription({
+      ...targetSubscription,
+      updatedAt: new Date().toISOString(),
+      sharedWith: (targetSubscription.sharedWith || []).map((member) =>
+        member.id === memberId ? withSharedMemberPaymentStatus(member, paid) : member
+      ),
+    });
+
+    const updatedSubscriptions = subscriptions.map((subscription) =>
+      subscription.id === subscriptionId ? updatedSubscription : subscription
+    );
+
+    setSubscriptions(updatedSubscriptions);
+    localStorage.setItem('subscriptions', JSON.stringify(updatedSubscriptions));
+    if (user) {
+      localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updatedSubscriptions));
+      const result = await saveToSupabase(
+        [toSupabaseRow(updatedSubscription, user.id)],
+        [toMinimalSupabaseRow(updatedSubscription, user.id)],
+        [toMarketplaceCompatibleSupabaseRow(updatedSubscription, user.id)]
+      );
+      if (result === 'fail') {
+        showToast(m('Status salvo apenas localmente', 'Status saved locally only', 'Estado guardado solo localmente', 'Stato salvato solo in locale'), false);
+      }
+      setDoc(doc(db, 'subscriptions', updatedSubscription.id), sanitizeForFirebase(updatedSubscription) as any).catch(() => {});
+    }
+  };
+
+  const handleLinkSharedUserToSubscription = async (
+    subscriptionId: string,
+    linkedUser: { id: string; name?: string; username: string },
+    amount: number,
+    currency: Currency,
+    options: {
+      shareCredentials: boolean;
+      paymentMode: 'immediate' | 'bitcoin';
+      paymentType: 'onetime' | 'monthly';
+      bitcoinAmountSats: number;
+    }
+  ) => {
+    if (!user) return;
+
+    const targetSubscription = subscriptions.find((subscription) => subscription.id === subscriptionId);
+    if (!targetSubscription) return;
+
+    const existing = findSharedMemberForUser(
+      targetSubscription.sharedWith,
+      linkedUser.id,
+      linkedUser.username
+    );
+
+    const remainingMembers = (targetSubscription.sharedWith || []).filter((member) => {
+      const normalizedUsername = member.username?.replace('@', '').toLowerCase();
+      return member.userId !== linkedUser.id && member.id !== linkedUser.id && normalizedUsername !== linkedUser.username.toLowerCase();
+    });
+
+    const mergedSharedWith = [
+      ...remainingMembers,
+      {
+        ...existing,
+        id: linkedUser.id,
+        userId: linkedUser.id,
+        username: linkedUser.username.toLowerCase(),
+        name: linkedUser.name || existing?.name || linkedUser.username,
+        amount,
+        currency,
+        paymentDate: existing?.paymentDate || targetSubscription.dueDate,
+        info: existing?.info || '',
+        accepted: false,
+        shareCredentials: options.shareCredentials,
+        paymentMode: options.paymentMode,
+        paymentType: options.paymentType,
+        bitcoinAmountSats: options.bitcoinAmountSats,
+        paymentStatus: 'unpaid',
+        credentialsUnlocked: false,
+        guaranteeSats: options.paymentMode === 'bitcoin' && options.paymentType === 'monthly'
+          ? options.bitcoinAmountSats
+          : 0,
+      },
+    ];
+
+    const incomeCurrency = targetSubscription.incomeCurrency || targetSubscription.costCurrency || currency;
+    const totalSharedIncome = calculateConfirmedSharedIncome(
+      mergedSharedWith as SharedMember[],
+      incomeCurrency,
+      (targetSubscription.costCurrency as Currency) || currency
+    );
+
+    const updatedSubscription = normalizeSubscription({
+      ...targetSubscription,
+      updatedAt: new Date().toISOString(),
+      sharedWith: mergedSharedWith,
+      hasIncome: mergedSharedWith.length > 0 || targetSubscription.hasIncome,
+      incomeCurrency,
+      incomeAmount: totalSharedIncome,
+    });
+
+    const updatedSubscriptions = subscriptions.map((subscription) =>
+      subscription.id === subscriptionId ? updatedSubscription : subscription
+    );
+
+    setSubscriptions(updatedSubscriptions);
+    localStorage.setItem('subscriptions', JSON.stringify(updatedSubscriptions));
+    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updatedSubscriptions));
+    hydrateUserSearchCache([linkedUser]);
+
+    const optimisticFriend: FriendProfile = {
+      id: linkedUser.id,
+      name: linkedUser.name,
+      username: linkedUser.username.toLowerCase(),
+      createdAt: new Date().toISOString(),
+    };
+
+    setFriends((currentFriends) => {
+      const nextFriends = [
+        optimisticFriend,
+        ...currentFriends.filter((friend) => friend.id !== linkedUser.id),
+      ];
+      writeFriendsCache(user.id, nextFriends);
+      return nextFriends;
+    });
+
+    void (async () => {
+      try {
+        await withTimeout(
+          upsertFriendships(user.id, [linkedUser.id]),
+          3000,
+          'Friend upsert timed out'
+        );
+      } catch (error) {
+        console.error('[BoaWallet] Failed to create friendship during sharing', error);
+      }
+
+      try {
+        const result = await withTimeout(
+          saveToSupabase(
+            [toSupabaseRow(updatedSubscription, user.id)],
+            [toMinimalSupabaseRow(updatedSubscription, user.id)],
+            [toMarketplaceCompatibleSupabaseRow(updatedSubscription, user.id)]
+          ),
+          5000,
+          'Shared subscription sync timed out'
+        );
+
+        if (result === 'fail') {
+          showToast(m('Participante salvo apenas localmente', 'Participant saved locally only', 'Participante guardado solo localmente', 'Partecipante salvato solo in locale'), false);
+        }
+      } catch (error) {
+        console.error('[BoaWallet] Failed to sync linked shared member', error);
+        showToast(m('Participante salvo apenas localmente', 'Participant saved locally only', 'Participante guardado solo localmente', 'Partecipante salvato solo in locale'), false);
+      }
+
+      setDoc(doc(db, 'subscriptions', updatedSubscription.id), sanitizeForFirebase(updatedSubscription) as any).catch(() => {});
+      void refreshFriends(user.id);
+    })();
+  };
+
   const handleDelete = async (id: string) => {
     if (user) {
       const supaPromise = supabase.from('subscriptions').delete().eq('id', id).eq('user_id', user.id);
+      const membersPromise = supabase.from('subscription_members').delete().eq('subscription_id', id).eq('owner_id', user.id);
       const firePromise = deleteDoc(doc(db, 'subscriptions', id));
-      await Promise.allSettled([supaPromise, firePromise]);
+      await Promise.allSettled([supaPromise, membersPromise, firePromise]);
     } else {
       setSubscriptions(subs => subs.filter(s => s.id !== id));
     }
     setSubToDelete(null);
   };
 
-  const openEdit = (sub: Subscription) => { setEditingSub(sub); setIsFormOpen(true); };
+  const openEdit = (sub: Subscription) => {
+    if (sub.isSharedIncoming) {
+      showToast(m('Essa assinatura foi compartilhada com voce e nao pode ser editada aqui.', 'This shared subscription cannot be edited here.', 'Esta suscripcion compartida no se puede editar aqui.', 'Questo abbonamento condiviso non puo essere modificato qui.'), false);
+      return;
+    }
+    setEditingSub(sub);
+    setIsFormOpen(true);
+  };
   const openNew  = () => { setEditingSub(undefined); setIsFormOpen(true); };
 
   // --- Export/Import ---
@@ -611,7 +1682,7 @@ export default function App() {
          const result = await Filesystem.writeFile({
             path: 'boa-wallet-report.pdf',
             data: pdfBase64,
-            directory: Directory.Documents
+            directory: Directory.Cache
          });
          await Share.share({ title: 'Boa Wallet Report', url: result.uri });
       } else {
@@ -624,13 +1695,37 @@ export default function App() {
   };
 
   const exportJSON = async () => {
-    const data = JSON.stringify({ subscriptions, adjustments }, null, 2);
-    if (Capacitor.isNativePlatform()) {
-      const result = await Filesystem.writeFile({ path: 'boa-wallet-export.json', data, directory: Directory.Documents, encoding: Encoding.UTF8 });
-      await Share.share({ title: 'Boa Wallet Export', url: result.uri });
-    } else {
-      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([data],{type:'application/json'})), download:'boa-wallet-export.json' });
-      a.click();
+    const data = JSON.stringify({
+      app: 'BoaWallet',
+      exportedAt: new Date().toISOString(),
+      subscriptions,
+      adjustments,
+    }, null, 2);
+    const exportFileName = `boa-wallet-export-${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const result = await Filesystem.writeFile({
+          path: exportFileName,
+          data,
+          directory: Directory.Cache,
+          encoding: Encoding.UTF8
+        });
+        await (Share as any).share({
+          title: 'Boa Wallet Export',
+          text: 'Boa Wallet Export',
+          files: [result.uri],
+          url: result.uri,
+        });
+      } else {
+        const objectUrl = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+        const a = Object.assign(document.createElement('a'), { href: objectUrl, download: exportFileName });
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+      showToast(m('JSON exportado com sucesso!', 'JSON exported successfully!', 'JSON exportado con exito!', 'JSON esportato con successo!'), true);
+    } catch (err: any) {
+      console.error('JSON export error', err);
+      showToast(m('Erro ao exportar JSON', 'JSON export failed', 'Error al exportar JSON', 'Errore durante l esportazione JSON'), false);
     }
   };
 
@@ -652,24 +1747,46 @@ export default function App() {
         } else {
           throw new Error('Invalid JSON structure: Expected an array or an object with a "subscriptions" key.');
         }
+        const adjustmentsToImport = Array.isArray(data?.adjustments) ? data.adjustments : [];
 
         const normalized = subscriptionsToImport.map(s => normalizeSubscription(s));
         const n = normalized.length;
+        const normalizedAdjustments = adjustmentsToImport.map((adjustment: any) => ({
+          id: String(adjustment.id || Date.now() + Math.random()),
+          description: adjustment.description || '',
+          subscriptionId: adjustment.subscriptionId,
+          amount: Number(adjustment.amount) || 0,
+          currency: adjustment.currency || 'BRL',
+          month: Number(adjustment.month) || new Date().getMonth() + 1,
+          year: Number(adjustment.year) || new Date().getFullYear(),
+        }));
 
         // 1. Always save locally FIRST
         setSubscriptions(normalized);
+        setAdjustments(normalizedAdjustments);
         localStorage.setItem('subscriptions', JSON.stringify(normalized));
+        localStorage.setItem('boa_adjustments', JSON.stringify(normalizedAdjustments));
 
         if (user) {
           // Tag every item with this user's id
           const withUser = normalized.map(s => normalizeSubscription({ ...s, user_id: user.id, userId: user.id }));
           localStorage.setItem('subscriptions_' + user.id, JSON.stringify(withUser));
+          localStorage.setItem('adjustments_' + user.id, JSON.stringify(normalizedAdjustments));
 
           console.log('[BoaWallet] Pushing imported data to Cloud...');
           const result = await saveToSupabase(
             withUser.map(s => toSupabaseRow(s, user.id)),
-            withUser.map(s => toMinimalSupabaseRow(s, user.id))
+            withUser.map(s => toMinimalSupabaseRow(s, user.id)),
+            withUser.map(s => toMarketplaceCompatibleSupabaseRow(s, user.id))
           );
+          if (normalizedAdjustments.length > 0) {
+            await supabase.from('adjustments').upsert(
+              normalizedAdjustments.map((adjustment) => ({
+                ...adjustment,
+                user_id: user.id,
+              }))
+            );
+          }
 
           if (result === 'ok' || result === 'partial') {
             showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
@@ -678,7 +1795,7 @@ export default function App() {
           }
 
           // Firebase secondary — silent
-          withUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
+          withUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), sanitizeForFirebase(item) as any).catch(() => {}));
         } else {
           showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
         }
@@ -691,8 +1808,14 @@ export default function App() {
     event.target.value = '';
   };
 
-  const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
-  const disabledSubs = subscriptions.filter(s => s.status?.startsWith('cancelled'));
+  const ownedActiveSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
+  const receivedActiveSubs = receivedSubscriptions.filter(s => !s.status?.startsWith('cancelled'));
+  const activeSubs = [...ownedActiveSubs, ...receivedActiveSubs];
+  const disabledSubs = [
+    ...subscriptions.filter(s => s.status?.startsWith('cancelled')),
+    ...receivedSubscriptions.filter(s => s.status?.startsWith('cancelled')),
+  ];
+  const showInitialSyncLoader = !!user && syncLoading && subscriptions.length === 0 && receivedSubscriptions.length === 0;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white selection:bg-[#d0d0a0]/30">
@@ -744,7 +1867,47 @@ export default function App() {
               <div className="relative">
                 <UserAvatar user={user} onClick={() => setShowProfileMenu(!showProfileMenu)} />
                 {showProfileMenu && (
-                  <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-1 min-w-[140px]">
+                  <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-2 min-w-[220px]">
+                    {/* Username section */}
+                    <div className="px-4 py-2 border-b border-gray-800 mb-1">
+                      {userHandle ? (
+                        <div>
+                          <span className="text-[#d0d0a0] text-sm font-bold">@{userHandle}</span>
+                          <p className="text-[10px] text-gray-500 mt-1">Username permanente vinculado ao seu UID</p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500">Defina seu @username permanente</p>
+                      )}
+                      {!userHandle && (
+                        <div className="mt-2 flex gap-1.5">
+                          <div className="relative flex-1">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[#d0d0a0] text-xs font-bold">@</span>
+                            <input
+                              value={pendingHandle}
+                              onChange={e => { setPendingHandle(e.target.value.replace('@','')); setHandleError(''); }}
+                              placeholder="username"
+                              className="w-full bg-[#252525] border border-gray-700 rounded-lg pl-6 pr-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#d0d0a0]/50"
+                            />
+                          </div>
+                          <button
+                            disabled={handleSaving}
+                            onClick={async () => {
+                              setHandleSaving(true);
+                              const res = await saveUserHandle(pendingHandle);
+                              setHandleSaving(false);
+                              if (res.ok) { setPendingHandle(''); showToast('@' + pendingHandle.replace('@','') + ' salvo permanentemente!', true); }
+                              else { setHandleError(res.error || 'Erro'); }
+                            }}
+                            className="px-2.5 py-1.5 bg-[#d0d0a0] text-[#0a0a0a] rounded-lg text-xs font-bold disabled:opacity-50"
+                          >
+                            {handleSaving ? '...' : 'OK'}
+                          </button>
+                        </div>
+                      )}
+                      {handleError && <p className="text-red-400 text-[10px] mt-1">{handleError}</p>}
+                    </div>
+                    <button onClick={() => { setShowMarketplaceModal(true); setShowProfileMenu(false); }} className="w-full text-left px-4 py-3 text-sm flex items-center gap-2 hover:bg-gray-800"><Globe size={16} /> {m('Assinaturas publicas', 'Public subscriptions', 'Suscripciones publicas', 'Abbonamenti pubblici')}</button>
+                    <button onClick={() => { setShowFriendsModal(true); setShowProfileMenu(false); }} className="w-full text-left px-4 py-3 text-sm flex items-center gap-2 hover:bg-gray-800"><Users size={16} /> {m('Amigos', 'Friends', 'Amigos', 'Amici')}</button>
                     <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-red-400 text-sm flex items-center gap-2 hover:bg-gray-800"><LogOut size={16} /> {m('Sair', 'Sign out', 'Cerrar sesión', 'Esci')}</button>
                   </div>
                 )}
@@ -752,10 +1915,19 @@ export default function App() {
             ) : loggingIn ? (
               <div className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] border border-gray-700 rounded-xl text-sm text-gray-300">
                 <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-[#d0d0a0] animate-spin" />
-                {m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
+                {loginMethod === 'web3'
+                  ? m('Conectando carteira...', 'Connecting wallet...', 'Conectando wallet...', 'Connessione wallet...')
+                  : m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
               </div>
             ) : (
-              <button onClick={handleLogin} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
+              <div className="flex items-center gap-2">
+                {canUseWeb3Login && (
+                  <button onClick={() => handleLogin('web3')} className="px-3 py-2 bg-[#1a1a1a] border border-gray-700 text-white rounded-xl text-sm font-bold transition-transform active:scale-95 flex items-center gap-1.5">
+                    <Wallet size={15} /> Web3
+                  </button>
+                )}
+                <button onClick={() => handleLogin('google')} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
+              </div>
             )}
 
             {/* Settings */}
@@ -766,6 +1938,12 @@ export default function App() {
               {showSettingsMenu && (
                 <div className="absolute right-0 top-full mt-2 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl z-50 py-2 w-48 text-sm">
                   <div className="px-3 pb-2 mb-2 border-b border-gray-800 text-xs font-semibold text-gray-500 uppercase">Exportação & Dados</div>
+                  {user && (
+                    <>
+                      <button onClick={() => { setShowFriendsModal(true); setShowSettingsMenu(false); }} className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800"><Users size={16} className="text-[#d0d0a0]" /> {m('Amigos', 'Friends', 'Amigos', 'Amici')}</button>
+                      <button onClick={() => { setShowMarketplaceModal(true); setShowSettingsMenu(false); }} className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800"><Globe size={16} className="text-[#d0d0a0]" /> {m('Assinaturas publicas', 'Public subscriptions', 'Suscripciones publicas', 'Abbonamenti pubblici')}</button>
+                    </>
+                  )}
                   <button onClick={() => { exportJSON(); setShowSettingsMenu(false); }} className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800"><Download size={16} className="text-[#d0d0a0]" /> Exportar JSON</button>
                   <label className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-gray-800 cursor-pointer">
                     <Upload size={16} className="text-[#d0d0a0]" /> Importar JSON
@@ -790,11 +1968,21 @@ export default function App() {
           <p className="text-gray-500 mt-2">{t('app.summary')}</p>
         </div>
 
+        {showInitialSyncLoader && (
+          <div className="bg-[#111] border border-gray-800 rounded-3xl py-6 px-5 flex items-center gap-4">
+            <div className="w-9 h-9 rounded-full border-2 border-[#d0d0a0]/30 border-t-[#d0d0a0] animate-spin shrink-0" />
+            <div>
+              <p className="text-white font-semibold text-sm">Carregando sua conta...</p>
+              <p className="text-gray-500 text-xs mt-1">Estamos sincronizando assinaturas, usuarios e logos.</p>
+            </div>
+          </div>
+        )}
+
         {/* TABS */}
         <div className="flex gap-8 border-b border-gray-800 overflow-x-auto scrollbar-hide">
-          {(['overview','cashflow','calendar','clients','history'] as const).map(id => (
-            <button key={id} onClick={() => setActiveTab(id)} className={`pb-3 text-sm font-medium transition-all relative ${activeTab === id ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}>
-              {id.charAt(0).toUpperCase() + id.slice(1)}
+          {(['overview','cashflow','calendar','clients','shared','wallet','history'] as const).map(id => (
+            <button key={id} onClick={() => setActiveTab(id as any)} className={`pb-3 text-sm font-medium transition-all relative whitespace-nowrap ${activeTab === id ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}>
+              {id === 'shared' ? 'Compartilhado' : id === 'wallet' ? '⚡ Bitcoin' : id.charAt(0).toUpperCase() + id.slice(1)}
               {activeTab === id && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-full" />}
             </button>
           ))}
@@ -804,12 +1992,40 @@ export default function App() {
         {activeTab === 'overview' && (
           <div className="space-y-10">
             <Dashboard subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} adjustments={adjustments} onAddAdjustment={handleAddAdjustment} onRemoveAdjustment={handleRemoveAdjustment} />
-            <SubscriptionList subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} onDelete={setSubToDelete} onToggleStatus={handleToggleStatus} />
+            <SubscriptionList subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} onDelete={setSubToDelete} onToggleStatus={handleToggleStatus} onShare={user ? setShareSub : undefined} />
           </div>
         )}
         {activeTab === 'cashflow' && <Cashflow subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}
-        {activeTab === 'calendar' && <CalendarView subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} />}
-        {activeTab === 'clients' && <ClientsTab subscriptions={subscriptions} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}
+        {activeTab === 'calendar' && <CalendarView subscriptions={activeSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} />}
+        {activeTab === 'clients' && (
+          <ClientsTab
+            subscriptions={subscriptions}
+            baseCurrency={baseCurrency}
+            exchangeRates={exchangeRates}
+            onEditSubscription={openEdit}
+            onSetMemberPaid={handleSetMemberPaid}
+          />
+        )}
+        {activeTab === 'shared' && (
+          user
+            ? <SharedWithMeTab
+                userId={user.id}
+                subscriptions={activeSubs}
+                onShareWithUser={(u) => setShareTargetUser(u)}
+              />
+            : <div className="flex flex-col items-center py-20 gap-3 text-gray-500"><p className="text-sm">Faça login para ver assinaturas compartilhadas</p></div>
+        )}
+        {activeTab === 'wallet' && (
+          user
+            ? <LightningWallet
+                userId={user.id}
+                userHandle={userHandle}
+                btcPriceUsd={exchangeRates['BTC'] ? 1 / exchangeRates['BTC'] : undefined}
+              />
+            : <div className="flex flex-col items-center py-20 gap-3 text-gray-500">
+                <p className="text-sm">Faça login para acessar a carteira Bitcoin</p>
+              </div>
+        )}
         {activeTab === 'history' && (
           <div className="opacity-70 grayscale-[0.5]">
             <SubscriptionList subscriptions={disabledSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} onDelete={setSubToDelete} onToggleStatus={handleToggleStatus} />
@@ -818,8 +2034,85 @@ export default function App() {
       </main>
 
       {/* Modals */}
-      {!userName && !user && !authLoading && <WelcomeModal onSave={setUserName} onLogin={handleLogin} />}
+      {!userName && !user && !authLoading && (
+        <WelcomeModal
+          onSave={setUserName}
+          onLogin={() => handleLogin('google')}
+          onWeb3Login={canUseWeb3Login ? () => handleLogin('web3') : undefined}
+          canUseWeb3Login={canUseWeb3Login}
+          loggingIn={loggingIn}
+          loginMethod={loginMethod}
+        />
+      )}
       {isFormOpen && <SubscriptionForm subscription={editingSub} onSave={handleSave} onClose={() => setIsFormOpen(false)} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}
+      {shareSub && user && (
+        <ShareModal
+          subscription={shareSub}
+          currentUserId={user.id}
+          preselectedUser={sharePreUser}
+          onClose={() => { setShareSub(null); setSharePreUser(null); }}
+          onShareLinkedMember={handleLinkSharedUserToSubscription}
+          onShared={(msg) => { showToast(msg, true); setShareSub(null); setSharePreUser(null); }}
+        />
+      )}
+
+      {/* Subscription picker — shown when user picked from Users tab */}
+      {shareTargetUser && !shareSub && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
+          <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl w-full sm:max-w-md max-h-[70vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between p-5 border-b border-gray-800 shrink-0">
+              <div>
+                <h3 className="font-bold text-white text-sm">Qual assinatura compartilhar?</h3>
+                <p className="text-xs text-gray-500 mt-0.5">com @{shareTargetUser.username}</p>
+              </div>
+              <button onClick={() => setShareTargetUser(null)} className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-400 hover:text-white">
+                <span className="text-lg leading-none">&times;</span>
+              </button>
+            </div>
+            <div className="overflow-y-auto p-3 space-y-2">
+              {ownedActiveSubs.length === 0 && (
+                <p className="text-gray-500 text-sm text-center py-8">Nenhuma assinatura ativa</p>
+              )}
+              {ownedActiveSubs.map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => { setShareSub(sub); setSharePreUser(shareTargetUser); setShareTargetUser(null); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 bg-[#252525] hover:bg-[#2a2a2a] border border-gray-800 rounded-2xl text-left active:scale-95 transition-all"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-lg shrink-0">{sub.emoji}</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-medium truncate">{sub.name}</p>
+                    <p className="text-gray-500 text-xs">{sub.costCurrency} {sub.costAmount}/mês</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFriendsModal && user && (
+        <FriendsModal
+          currentUserId={user.id}
+          currentUsername={userHandle || undefined}
+          currentName={userName || user.user_metadata?.full_name || undefined}
+          friends={friends}
+          loading={friendsLoading}
+          onAddFriend={handleAddFriend}
+          onShareSubscription={(friend) => {
+            setShareTargetUser(friend);
+            setShowFriendsModal(false);
+          }}
+          onClose={() => setShowFriendsModal(false)}
+        />
+      )}
+
+      {showMarketplaceModal && user && (
+        <PublicMarketplaceModal
+          userId={user.id}
+          onClose={() => setShowMarketplaceModal(false)}
+        />
+      )}
       
       {subToDelete && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -924,9 +2217,10 @@ export default function App() {
                     if (merged.length > 0) {
                       const result = await saveToSupabase(
                         merged.map(s => toSupabaseRow(s, user.id)),
-                        merged.map(s => toMinimalSupabaseRow(s, user.id))
+                        merged.map(s => toMinimalSupabaseRow(s, user.id)),
+                        merged.map(s => toMarketplaceCompatibleSupabaseRow(s, user.id))
                       );
-                      merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), item).catch(() => {}));
+                      merged.forEach(item => setDoc(doc(db, 'subscriptions', item.id), sanitizeForFirebase(item) as any).catch(() => {}));
                       if (result === 'fail') throw new Error('Cloud push failed');
                     }
                     showToast(m(`Sincronizado! ${merged.length} itens`, `Synced! ${merged.length} items`, `¡Sincronizado! ${merged.length} elementos`, `Sincronizzato! ${merged.length} elementi`), true);

@@ -1,8 +1,54 @@
 import React, { useState } from 'react';
 import { Subscription, Currency, convertCurrency, getMonthlyAmount, getSubscriptionTotalCost, getEffectiveTotalCost } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Edit2, Trash2, X, TrendingUp, TrendingDown, Power, Users as UsersIcon } from 'lucide-react';
+import { Edit2, Trash2, X, TrendingUp, TrendingDown, Power, Users as UsersIcon, Share2 } from 'lucide-react';
 import { useAppContext } from '../AppContext';
+import { bestLogoUrl, getClearbitLogoUrl } from '../lib/logos';
+
+function SubscriptionLogo({ sub }: { sub: Subscription }) {
+  const [primaryFailed, setPrimaryFailed] = React.useState(false);
+  const [clearbitFailed, setClearbitFailed] = React.useState(false);
+
+  // Stage 1: best URL (Clearbit by name, or converted from old favicon, or original)
+  const primary = bestLogoUrl(sub.logoUrl, sub.name);
+
+  // Stage 2: direct Clearbit by name (only needed if primary wasn't Clearbit)
+  const clearbit = getClearbitLogoUrl(sub.name);
+
+  if (primary && !primaryFailed) {
+    return (
+      <img
+        src={primary}
+        alt={sub.name}
+        referrerPolicy="no-referrer"
+        className="w-full h-full object-contain bg-white p-0.5"
+        onError={() => setPrimaryFailed(true)}
+      />
+    );
+  }
+
+  if (clearbit && clearbit !== primary && !clearbitFailed) {
+    return (
+      <img
+        src={clearbit}
+        alt={sub.name}
+        referrerPolicy="no-referrer"
+        className="w-full h-full object-contain bg-white p-0.5"
+        onError={() => setClearbitFailed(true)}
+      />
+    );
+  }
+
+  // Final fallback: initials with consistent color
+  const initial = (sub.name || sub.emoji || '?').charAt(0).toUpperCase();
+  const colors = ['#3b4a2f','#2f3a4a','#4a2f3b','#2f4a3a','#4a3a2f'];
+  const colorIdx = initial.charCodeAt(0) % colors.length;
+  return (
+    <div className="w-full h-full flex items-center justify-center text-[#d0d0a0] font-bold text-base" style={{ background: colors[colorIdx] }}>
+      {sub.emoji && sub.emoji !== '📦' ? sub.emoji : initial}
+    </div>
+  );
+}
 import { useTranslation } from '../i18n';
 
 interface SubscriptionListProps {
@@ -12,12 +58,14 @@ interface SubscriptionListProps {
   onEdit: (sub: Subscription) => void;
   onDelete: (id: string) => void;
   onToggleStatus?: (id: string, currentStatus: string) => void;
+  onShare?: (sub: Subscription) => void;
 }
 
-export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete, onToggleStatus }: SubscriptionListProps) {
+export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, onEdit, onDelete, onToggleStatus, onShare }: SubscriptionListProps) {
   const { language } = useAppContext();
   const t = useTranslation(language);
   const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
 
   // Sort by due date
   const sortedSubs = [...subscriptions].sort((a, b) => a.dueDate - b.dueDate);
@@ -45,6 +93,10 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
               const effectiveCost = getEffectiveTotalCost(sub);
               const monthlyCost = getMonthlyAmount(effectiveCost.amount, sub.billingCycle);
               const costInBase = convertCurrency(monthlyCost, effectiveCost.currency, baseCurrency, exchangeRates);
+              const isReadOnly = !!sub.isSharedIncoming;
+              const sharedOwnerLabel = sub.sharedOwnerUsername
+                ? `@${sub.sharedOwnerUsername}`
+                : sub.sharedOwnerName || '';
 
               let incomeInBase = 0;
               let cashbackInBase = 0;
@@ -64,9 +116,9 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
               return (
                 <React.Fragment key={sub.id}>
                   <tr
-                    className="hover:bg-[#222] transition-colors group cursor-pointer sm:cursor-default"
+                    className={`hover:bg-[#222] transition-colors group ${isReadOnly ? 'cursor-default' : 'cursor-pointer sm:cursor-default'}`}
                     onClick={() => {
-                      if (window.innerWidth < 640) {
+                      if (window.innerWidth < 640 && !isReadOnly) {
                         setSelectedSub(sub);
                       }
                     }}
@@ -74,11 +126,7 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                     <td className="p-4">
                       <div className="flex items-center gap-4">
                         <div className="w-12 h-12 rounded-full bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
-                          {sub.logoUrl ? (
-                            <img src={sub.logoUrl} alt={sub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
-                          ) : (
-                            sub.emoji
-                          )}
+                          <SubscriptionLogo sub={sub} />
                         </div>
                         <div className="hidden sm:block">
                           <p className="font-medium text-white flex items-center gap-2 text-base">
@@ -98,8 +146,16 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                                 +{sub.subItems.length}
                               </span>
                             )}
+                            {isReadOnly && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#2a2a20] text-[#d0d0a0]">
+                                Compartilhado
+                              </span>
+                            )}
                           </p>
                           <p className="text-xs text-gray-400 mt-0.5">{t(`cat.${sub.category}` as any) === `cat.${sub.category}` ? sub.category : t(`cat.${sub.category}` as any)}</p>
+                          {sharedOwnerLabel && (
+                            <p className="text-[10px] text-[#d0d0a0] mt-0.5">de {sharedOwnerLabel}</p>
+                          )}
                           {sub.sharedWith && sub.sharedWith.length > 0 && (
                             <div className="flex items-center gap-1 mt-0.5">
                               <UsersIcon size={10} className="text-emerald-400" />
@@ -187,16 +243,18 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-[#fdfbf7] dark:bg-[#222] text-gray-800 dark:text-gray-300 border border-gray-100 dark:border-gray-800">
                           {t(`pay.${sub.paymentMethod}` as any) === `pay.${sub.paymentMethod}` ? sub.paymentMethod : t(`pay.${sub.paymentMethod}` as any)}
                         </span>
-                        <div className="flex items-center gap-1.5 mt-1">
+                      <div className="flex items-center gap-1.5 mt-1">
                           {sub.bankLogoUrl && sub.paymentSource !== 'Outro' && (
-                            <img src={sub.bankLogoUrl} alt={sub.paymentSource} referrerPolicy="no-referrer" className="w-4 h-4 rounded-full bg-white object-cover" />
+                            <img src={bestLogoUrl(sub.bankLogoUrl, sub.paymentSource || '') || ''} alt={sub.paymentSource} referrerPolicy="no-referrer" className="w-4 h-4 rounded-full bg-white object-contain p-0.5" />
                           )}
-                          <span className="text-xs text-gray-500 dark:text-gray-400">{sub.paymentSource}</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {isReadOnly && sharedOwnerLabel ? `Compartilhado por ${sharedOwnerLabel}` : sub.paymentSource}
+                          </span>
                         </div>
                       </div>
                     </td>
                     <td className="p-4 text-right hidden sm:table-cell">
-                        {onToggleStatus && (
+                        {onToggleStatus && !isReadOnly && (
                           <button
                             onClick={(e) => { e.stopPropagation(); onToggleStatus(sub.id, sub.status || 'active'); }}
                             title={sub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}
@@ -205,18 +263,54 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                             <Power size={16} />
                           </button>
                         )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onEdit(sub); }}
-                          className="p-2 text-gray-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-900/30"
-                        >
-                          <Edit2 size={16} />
-                        </button>
+                        {onShare && !isReadOnly && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onShare(sub); }}
+                            title="Compartilhar"
+                            className="p-2 text-gray-400 hover:text-[#d0d0a0] transition-colors rounded-lg hover:bg-[#2a2a1a]"
+                          >
+                            <Share2 size={16} />
+                          </button>
+                        )}
+                        {!isReadOnly && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onEdit(sub); }}
+                            className="p-2 text-gray-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-blue-900/30"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                        )}
                     </td>
                   </tr>
-                  {(sub.subItems && sub.subItems.length > 0) || sub.notes ? (
+                  {(sub.subItems && sub.subItems.length > 0) || sub.notes || sub.serviceUsername || sub.servicePassword ? (
                     <tr className="bg-[#121212]/50">
                       <td colSpan={7} className="p-0">
                         <div className="pl-20 pr-4 py-3 border-t border-gray-800/50">
+                          {(sub.serviceUsername || sub.servicePassword) && (
+                            <div className="mb-3">
+                              <div className="text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Acesso:</div>
+                              <div className="space-y-1.5">
+                                {sub.serviceUsername && (
+                                  <p className="text-sm text-gray-300">
+                                    <span className="text-gray-500">Login:</span> {sub.serviceUsername}
+                                  </p>
+                                )}
+                                {sub.servicePassword && (
+                                  <p className="text-sm text-gray-300">
+                                    <span className="text-gray-500">Senha:</span>{' '}
+                                    {revealedPasswords[sub.id] ? sub.servicePassword : '••••••••'}
+                                    <button
+                                      type="button"
+                                      onClick={() => setRevealedPasswords((current) => ({ ...current, [sub.id]: !current[sub.id] }))}
+                                      className="ml-2 text-xs text-[#d0d0a0] hover:underline"
+                                    >
+                                      {revealedPasswords[sub.id] ? 'Ocultar' : 'Mostrar'}
+                                    </button>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          )}
                           {sub.notes && (
                             <div className="mb-3">
                               <div className="text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">{t('form.notes')}:</div>
@@ -361,11 +455,7 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-full bg-[#222] flex items-center justify-center text-xl overflow-hidden shrink-0 shadow-sm">
-                  {selectedSub.logoUrl ? (
-                    <img src={selectedSub.logoUrl} alt={selectedSub.name} referrerPolicy="no-referrer" className="w-full h-full object-cover bg-white" />
-                  ) : (
-                    selectedSub.emoji
-                  )}
+                  <SubscriptionLogo sub={selectedSub} />
                 </div>
                 <div>
                   <h3 className="text-lg font-medium text-white">{selectedSub.name}</h3>
@@ -378,7 +468,7 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {onToggleStatus && (
+              {onToggleStatus && !selectedSub.isSharedIncoming && (
                 <button
                   onClick={() => { onToggleStatus(selectedSub.id, selectedSub.status || 'active'); setSelectedSub(null); }}
                   className={`flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl hover:bg-[#2a2a2a] transition-colors ${selectedSub.status?.startsWith('cancelled') ? 'text-emerald-400' : 'text-orange-400'}`}
@@ -387,14 +477,19 @@ export function SubscriptionList({ subscriptions, baseCurrency, exchangeRates, o
                   <span className="text-xs font-medium">{selectedSub.status?.startsWith('cancelled') ? t('list.enable' as any) : t('list.disable' as any)}</span>
                 </button>
               )}
-              <button
-                onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
-                className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"
-              >
-                <Edit2 size={24} />
-                <span className="text-xs font-medium">{t('list.edit' as any)}</span>
-              </button>
+              {!selectedSub.isSharedIncoming && (
+                <button
+                  onClick={() => { onEdit(selectedSub); setSelectedSub(null); }}
+                  className="flex flex-col items-center justify-center gap-3 p-4 bg-[#222] rounded-2xl text-blue-400 hover:bg-[#2a2a2a] transition-colors"
+                >
+                  <Edit2 size={24} />
+                  <span className="text-xs font-medium">{t('list.edit' as any)}</span>
+                </button>
+              )}
             </div>
+            {selectedSub.isSharedIncoming && (
+              <p className="text-xs text-gray-500 mt-4 text-center">Essa assinatura foi compartilhada com voce e aparece aqui so para acompanhamento.</p>
+            )}
           </div>
         </div>
       )}

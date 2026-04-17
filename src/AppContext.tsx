@@ -1,10 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Language } from './i18n';
-import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
-import { supabase } from './supabase';
-import { auth as firebaseAuth } from './firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
+import { onAuthStateChanged } from 'firebase/auth';
+import { Language } from './i18n';
+import { auth as firebaseAuth } from './firebase';
+import { supabase } from './supabase';
+import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
 
 export type Gender = 'M' | 'F' | 'N';
 
@@ -22,15 +22,16 @@ interface AppContextType {
   authLoading: boolean;
   googleAccessToken: string | null;
   setGoogleAccessToken: (token: string | null) => void;
+  userHandle: string;
+  setUserHandle: (handle: string) => void;
+  saveUserHandle: (handle: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const getBrowserLanguage = (): Language => {
   const lang = navigator.language.split('-')[0];
-  if (['pt', 'en', 'es', 'it'].includes(lang)) {
-    return lang as Language;
-  }
+  if (['pt', 'en', 'es', 'it'].includes(lang)) return lang as Language;
   return 'en';
 };
 
@@ -43,41 +44,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => localStorage.getItem('googleAccessToken'));
+  const [userHandle, setUserHandle] = useState<string>(() => localStorage.getItem('userHandle') || '');
 
   useEffect(() => {
     let supaUnsub: (() => void) | null = null;
 
+    const loadHandle = async (uid: string) => {
+      try {
+        const { data } = await supabase.from('users').select('username').eq('id', uid).single();
+        if (data?.username) {
+          setUserHandle(data.username);
+          localStorage.setItem('userHandle', data.username);
+        } else {
+          setUserHandle('');
+          localStorage.removeItem('userHandle');
+        }
+      } catch {
+        setUserHandle('');
+        localStorage.removeItem('userHandle');
+      }
+    };
+
     const tryReauthFromFirebase = async () => {
       const fbUser = firebaseAuth.currentUser;
       if (!fbUser) return false;
+
       try {
         console.log('[BoaWallet] Firebase active, refreshing Supabase session...');
-        const idToken = await fbUser.getIdToken(/* forceRefresh */ true);
+        const idToken = await fbUser.getIdToken(true);
         const { data, error } = await supabase.auth.signInWithIdToken({
           provider: 'google',
           token: idToken,
         });
+
         if (error) {
           console.warn('[BoaWallet] Supabase re-auth failed:', error.message);
           return false;
         }
+
         if (data.user) {
           setUser(data.user);
           if (data.user.user_metadata?.full_name) {
             setUserName(data.user.user_metadata.full_name);
           }
+          await loadHandle(data.user.id);
           console.log('[BoaWallet] Supabase session restored from Firebase.');
           return true;
         }
-      } catch (e) {
-        console.warn('[BoaWallet] Firebase token refresh failed:', e);
+      } catch (error) {
+        console.warn('[BoaWallet] Firebase token refresh failed:', error);
       }
+
       return false;
     };
 
     const init = async () => {
-      // 1. Check existing Supabase session
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       const currentUser = session?.user || null;
 
       if (currentUser) {
@@ -85,45 +109,104 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (currentUser.user_metadata?.full_name) {
           setUserName(currentUser.user_metadata.full_name);
         }
+        await loadHandle(currentUser.id);
         setAuthLoading(false);
       } else {
-        // 2. No Supabase session — wait for Firebase to initialize, then re-auth
         const unsubFb = onAuthStateChanged(firebaseAuth, async (fbUser) => {
           if (fbUser) {
             await tryReauthFromFirebase();
           }
           setAuthLoading(false);
-          unsubFb(); // only need this once on startup
+          unsubFb();
         });
       }
 
-      // 3. Listen to Supabase auth state for ongoing changes (login/logout)
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        const currentUser = session?.user || null;
-        setUser(currentUser);
-        if (currentUser?.user_metadata?.full_name) {
-          setUserName(currentUser.user_metadata.full_name);
-        } else if (!currentUser) {
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        const currentSessionUser = session?.user || null;
+        setUser(currentSessionUser);
+
+        if (currentSessionUser?.user_metadata?.full_name) {
+          setUserName(currentSessionUser.user_metadata.full_name);
+          await loadHandle(currentSessionUser.id);
+        } else {
           setUserName('');
+          setUserHandle('');
+          localStorage.removeItem('userHandle');
         }
       });
+
       supaUnsub = () => subscription.unsubscribe();
     };
 
     init();
-
-    return () => { supaUnsub?.(); };
+    return () => {
+      supaUnsub?.();
+    };
   }, []);
 
-  useEffect(() => { localStorage.setItem('userName', userName); }, [userName]);
-  useEffect(() => { localStorage.setItem('userGender', gender); }, [gender]);
+  useEffect(() => {
+    localStorage.setItem('userName', userName);
+  }, [userName]);
 
-  // Force dark mode always
+  useEffect(() => {
+    localStorage.setItem('userGender', gender);
+  }, [gender]);
+
+  useEffect(() => {
+    localStorage.setItem('userHandle', userHandle);
+  }, [userHandle]);
+
+  const saveUserHandle = async (handle: string): Promise<{ ok: boolean; error?: string }> => {
+    const clean = handle.replace('@', '').toLowerCase().trim();
+    if (!clean) return { ok: false, error: 'Username vazio' };
+    if (!/^[a-z0-9_]{3,20}$/.test(clean)) {
+      return { ok: false, error: 'Use 3-20 caracteres: letras, numeros e _' };
+    }
+    if (!user) return { ok: false, error: 'Faca login primeiro' };
+
+    try {
+      const { data: existingProfile, error: existingError } = await supabase
+        .from('users')
+        .select('id, username')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (existingError) return { ok: false, error: existingError.message };
+
+      if (existingProfile?.username) {
+        if (existingProfile.username === clean) {
+          setUserHandle(clean);
+          return { ok: true };
+        }
+        return { ok: false, error: 'Seu @username e permanente e nao pode ser alterado' };
+      }
+
+      const { error } = await supabase.from('users').upsert({
+        id: user.id,
+        email: user.email,
+        name: user.user_metadata?.full_name || userName || '',
+        username: clean,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (error) {
+        if (error.code === '23505') return { ok: false, error: '@' + clean + ' ja esta em uso' };
+        return { ok: false, error: error.message };
+      }
+
+      setUserHandle(clean);
+      return { ok: true };
+    } catch (error: any) {
+      return { ok: false, error: error.message };
+    }
+  };
+
   useEffect(() => {
     document.documentElement.classList.add('dark');
   }, []);
 
-  // Fetch real-time exchange rates
   useEffect(() => {
     const fetchRates = async () => {
       try {
@@ -134,14 +217,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         if (fiatData?.rates && btcData?.bitcoin) {
           const newRates: Record<Currency, number> = { ...DEFAULT_EXCHANGE_RATES };
-          (Object.keys(newRates) as Currency[]).forEach(currency => {
+          (Object.keys(newRates) as Currency[]).forEach((currency) => {
             if (currency !== 'BTC' && fiatData.rates[currency]) {
               newRates[currency] = fiatData.rates[currency];
             }
           });
           const btcPriceInUsd = btcData.bitcoin.usd;
-          newRates['BTC'] = 1 / btcPriceInUsd;
-          newRates['SATS'] = (1 / btcPriceInUsd) * 100000000;
+          newRates.BTC = 1 / btcPriceInUsd;
+          newRates.SATS = (1 / btcPriceInUsd) * 100000000;
           setExchangeRates(newRates);
         }
       } catch (error) {
@@ -155,7 +238,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AppContext.Provider value={{ language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, googleAccessToken, setGoogleAccessToken }}>
+    <AppContext.Provider
+      value={{
+        language,
+        setLanguage,
+        theme,
+        setTheme,
+        exchangeRates,
+        userName,
+        setUserName,
+        gender,
+        setGender,
+        user,
+        authLoading,
+        googleAccessToken,
+        setGoogleAccessToken,
+        userHandle,
+        setUserHandle,
+        saveUserHandle,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );
