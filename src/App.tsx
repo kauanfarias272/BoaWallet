@@ -11,6 +11,7 @@ import { SharedWithMeTab } from './components/SharedWithMeTab';
 import { FriendsModal } from './components/FriendsModal';
 import { LightningWallet } from './components/LightningWallet';
 import { PublicMarketplaceModal } from './components/PublicMarketplaceModal';
+import { BitcoinWalletLoginModal } from './components/BitcoinWalletLoginModal';
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember, BillingCycle } from './types';
 import { Plus, AlertTriangle, LogOut, Download, Upload, FileText, DollarSign, Database, Settings, Users, Wallet, Globe } from 'lucide-react';
 import { useAppContext } from './AppContext';
@@ -18,7 +19,7 @@ import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
 import { db, auth as firebaseAuth } from './firebase';
 import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore';
-import { signInWithCredential, GoogleAuthProvider, signOut as firebaseSignOut } from 'firebase/auth';
+import { signOut as firebaseSignOut } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
@@ -35,6 +36,12 @@ import { hydrateUserSearchCache, prefetchBoaUsers } from './lib/userSearch';
 import { withTimeout } from './lib/requestTimeout';
 import { embedCredentialsInNotes, stripCredentialsFromNotes } from './lib/serviceCredentials';
 import { syncToWatch } from './lib/wearSync';
+import {
+  BitcoinWalletLoginConfig,
+  deriveBitcoinWalletCredentials,
+  persistBitcoinWalletLoginConfig,
+  validateBitcoinWalletLoginConfig,
+} from './lib/bitcoinWalletAuth';
 
 /** Firebase rejects objects with `undefined` values — strip them before setDoc */
 function sanitizeForFirebase(obj: unknown): unknown {
@@ -107,7 +114,9 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
-  const [loginMethod, setLoginMethod] = useState<'google' | 'web3' | null>(null);
+  const [loginMethod, setLoginMethod] = useState<'google' | 'web3' | 'bitcoin' | null>(null);
+  const [showBitcoinLoginModal, setShowBitcoinLoginModal] = useState(false);
+  const [welcomeSkipped, setWelcomeSkipped] = useState(() => localStorage.getItem('boa_welcome_skipped') === '1');
   const [syncLoading, setSyncLoading] = useState(false);
   const [shareSub, setShareSub] = useState<Subscription | null>(null);
   const [sharePreUser, setSharePreUser] = useState<{ id: string; name?: string; username: string } | null>(null);
@@ -159,24 +168,38 @@ export default function App() {
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
 
   // Handle OAuth deep link callback (Android: io.boa.wallet://auth?code=...)
-  useEffect(() => {
-    return;
-    const listener = CapApp.addListener('appUrlOpen', async (event) => {
-      console.log('[BoaWallet] appUrlOpen:', event.url);
-      if (event.url.startsWith('io.boa.wallet://auth')) {
-        try {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(event.url);
-          if (error) {
-            console.error('[BoaWallet] OAuth code exchange failed:', error.message);
-            showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
-          } else if (data.session) {
-            console.log('[BoaWallet] OAuth session established!', data.session.user.email);
-            showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
-          }
-        } catch (e: any) {
-          console.error('[BoaWallet] appUrlOpen error:', e);
-        }
+  const handleOAuthUrl = async (url: string) => {
+    if (!url.startsWith('io.boa.wallet://auth')) return;
+    console.log('[BoaWallet] Handling OAuth URL:', url);
+    try {
+      // Normalize custom scheme → https so URLSearchParams parsing is reliable in all environments
+      const normalizedUrl = url.replace('io.boa.wallet://auth', 'https://boawallet.app/auth');
+      const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
+      if (error) {
+        console.error('[BoaWallet] OAuth code exchange failed:', error.message, error);
+        showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+      } else if (data.session) {
+        console.log('[BoaWallet] OAuth session established!', data.session.user.email);
+        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
       }
+    } catch (e: any) {
+      console.error('[BoaWallet] OAuth exchange error:', e);
+    }
+  };
+
+  useEffect(() => {
+    // Case 1: app was KILLED and relaunched by the deep link — getLaunchUrl catches it
+    CapApp.getLaunchUrl().then((result) => {
+      if (result?.url) {
+        console.log('[BoaWallet] getLaunchUrl:', result.url);
+        handleOAuthUrl(result.url);
+      }
+    }).catch(() => {});
+
+    // Case 2: app was in background and resumed by the deep link
+    const listener = CapApp.addListener('appUrlOpen', (event) => {
+      console.log('[BoaWallet] appUrlOpen:', event.url);
+      handleOAuthUrl(event.url);
     });
     return () => { listener.then(l => l.remove()); };
   }, []);
@@ -534,6 +557,95 @@ export default function App() {
   }, [user, userHandle]);
 
   // --- Auth ---
+  const handleBitcoinWalletLogin = async (config: BitcoinWalletLoginConfig) => {
+    setLoggingIn(true);
+    setLoginMethod('bitcoin');
+
+    try {
+      const wallet = await validateBitcoinWalletLoginConfig(config);
+      persistBitcoinWalletLoginConfig(wallet.normalizedConfig);
+
+      const { email, password, fingerprint } = await deriveBitcoinWalletCredentials(wallet.normalizedConfig);
+      let signInResult = await supabase.auth.signInWithPassword({ email, password });
+
+      if (signInResult.error || !signInResult.data.session) {
+        const signUpResult = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: wallet.walletName || 'Bitcoin Wallet',
+              login_provider: 'bitcoin_wallet',
+              wallet_fingerprint: fingerprint.slice(0, 16),
+            },
+          },
+        });
+
+        const signUpMessage = String(signUpResult.error?.message || '').toLowerCase();
+        const alreadyRegistered = signUpMessage.includes('already registered');
+
+        if (signUpResult.error && !alreadyRegistered) {
+          throw signUpResult.error;
+        }
+
+        signInResult = await supabase.auth.signInWithPassword({ email, password });
+
+        if (signInResult.error || !signInResult.data.session) {
+          const needsConfirmation = !!signUpResult.data.user && !signUpResult.data.session;
+          if (needsConfirmation) {
+            throw new Error(
+              m(
+                'A carteira foi validada, mas o Supabase ainda exige confirmacao de email para esse tipo de conta.',
+                'The wallet was validated, but Supabase still requires email confirmation for this account type.',
+                'La cartera fue validada, pero Supabase aun exige confirmacion de email para este tipo de cuenta.',
+                'Il wallet e stato validato, ma Supabase richiede ancora la conferma email per questo tipo di account.'
+              )
+            );
+          }
+
+          throw signInResult.error || new Error(
+            m(
+              'Nao foi possivel finalizar o login com a carteira Bitcoin.',
+              'Could not finish the Bitcoin wallet login.',
+              'No se pudo completar el login con la cartera Bitcoin.',
+              'Non e stato possibile completare l accesso con il wallet Bitcoin.'
+            )
+          );
+        }
+      }
+
+      if (!userName && wallet.walletName) {
+        setUserName(wallet.walletName);
+      }
+
+      setShowBitcoinLoginModal(false);
+      showToast(
+        m(
+          `Carteira ${wallet.walletName} conectada!`,
+          `${wallet.walletName} wallet connected!`,
+          `Cartera ${wallet.walletName} conectada!`,
+          `Wallet ${wallet.walletName} collegato!`
+        ),
+        true
+      );
+    } catch (error: any) {
+      console.error('[BoaWallet] Bitcoin wallet login failed:', error);
+      showToast(
+        error?.message ||
+          m(
+            'Erro ao fazer login com carteira Bitcoin.',
+            'Bitcoin wallet login failed.',
+            'Error al iniciar sesion con cartera Bitcoin.',
+            'Accesso con wallet Bitcoin non riuscito.'
+          ),
+        false
+      );
+    } finally {
+      setLoggingIn(false);
+      setLoginMethod(null);
+    }
+  };
+
   const handleLogin = async (method: 'google' | 'web3' = 'google') => {
     setLoggingIn(true);
     setLoginMethod(method);
@@ -560,66 +672,33 @@ export default function App() {
         return;
       }
       if (isNativePlatform) {
-        // Native-only Google sign-in via Firebase — no browser redirect
-        let idToken: string | null = null;
+        // Bypass Firebase native entirely — SHA-1 mismatch in Play Store AAB causes DEVELOPER_ERROR.
+        // Go straight to Supabase browser OAuth (PKCE); session arrives via appUrlOpen deep-link.
         try {
-          console.log('[BoaWallet] Firebase native sign-in...');
-          const result = await FirebaseAuthentication.signInWithGoogle();
-          idToken = result.credential?.idToken || null;
-
-          // Fallback: Play Store App Signing usa chave diferente, credential.idToken pode vir null.
-          // Nesse caso, pega o token diretamente do usuário Firebase autenticado.
-          if (!idToken) {
-            console.warn('[BoaWallet] credential.idToken null — tentando getIdToken fallback...');
-            const tokenResult = await FirebaseAuthentication.getIdToken({ forceRefresh: true });
-            idToken = tokenResult.token || null;
-          }
-        } catch (fbErr: any) {
-          console.error('[BoaWallet] Firebase native sign-in failed:', fbErr.message, fbErr.code);
-          // DEVELOPER_ERROR / code 10 = SHA-1 não registrado no Firebase (comum na Play Store)
-          const isDeveloperError =
-            fbErr.code === '10' ||
-            String(fbErr.message).includes('DEVELOPER_ERROR') ||
-            String(fbErr.message).includes('ApiException: 10');
-          if (isDeveloperError) {
-            showToast(
-              m(
-                'Erro de configuração Google (SHA-1). Contate o suporte.',
-                'Google config error (SHA-1 mismatch). Contact support.',
-                'Error de configuración Google. Contacta soporte.',
-                'Errore configurazione Google. Contatta supporto.'
-              ),
-              false
-            );
-          } else {
-            showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
-          }
-          return;
+          const { data: oauthData, error: oauthErr } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+              redirectTo: 'io.boa.wallet://auth',
+              skipBrowserRedirect: true,
+            },
+          });
+          if (oauthErr || !oauthData?.url) throw oauthErr ?? new Error('No OAuth URL');
+          // Open in system browser — avoids in-app WebView which blocks OAuth
+          window.open(oauthData.url, '_system');
+        } catch (error: any) {
+          console.error('[BoaWallet] Native Google login failed:', error);
+          showToast(
+            m(
+              'Erro ao abrir login. Tente novamente.',
+              'Could not open login. Please try again.',
+              'No se pudo abrir el login. Intentalo de nuevo.',
+              'Impossibile aprire il login. Riprova.'
+            ),
+            false
+          );
         }
-
-        if (!idToken) {
-          console.error('[BoaWallet] idToken null após todas as tentativas');
-          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
-          return;
-        }
-
-        // Sync with Firebase web SDK (non-critical)
-        try {
-          await signInWithCredential(firebaseAuth, GoogleAuthProvider.credential(idToken));
-        } catch { /* non-critical */ }
-
-        const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
-        if (error) {
-          console.error('[BoaWallet] Supabase token exchange failed:', error.message);
-          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
-          return;
-        }
-
-        console.log('[BoaWallet] Supabase session established via Firebase token.');
-        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
-        // Avisa o relógio que o usuário está autenticado (dados chegam após sync)
-        void syncToWatch(null, '', [], baseCurrency, exchangeRates);
-
+        // Session arrives asynchronously via appUrlOpen → handleOAuthUrl → exchangeCodeForSession
+        return;
       } else {
         // Web platform
         const { error } = await supabase.auth.signInWithOAuth({
@@ -653,8 +732,10 @@ export default function App() {
     void syncToWatch(null, '', [], baseCurrency, exchangeRates);
     // Encerra sessões no servidor (local scope = sem chamada de rede)
     try {
+      await FirebaseAuthentication.signOut().catch(() => {});
       await firebaseSignOut(firebaseAuth).catch(() => {});
-      await supabase.auth.signOut({ scope: 'local' });
+      await supabase.auth.signOut({ scope: 'global' });
+      setGoogleAccessToken(null);
     } catch (error) {
       console.error('Logout error', error);
     }
@@ -1915,12 +1996,17 @@ export default function App() {
             ) : loggingIn ? (
               <div className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] border border-gray-700 rounded-xl text-sm text-gray-300">
                 <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-[#d0d0a0] animate-spin" />
-                {loginMethod === 'web3'
+                {loginMethod === 'bitcoin'
+                  ? m('Validando carteira Bitcoin...', 'Validating Bitcoin wallet...', 'Validando cartera Bitcoin...', 'Validazione wallet Bitcoin...')
+                  : loginMethod === 'web3'
                   ? m('Conectando carteira...', 'Connecting wallet...', 'Conectando wallet...', 'Connessione wallet...')
                   : m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
               </div>
             ) : (
               <div className="flex items-center gap-2">
+                <button onClick={() => setShowBitcoinLoginModal(true)} className="px-3 py-2 bg-[#252015] border border-[#5A5A40] text-[#f4e5b2] rounded-xl text-sm font-bold transition-transform active:scale-95 flex items-center gap-1.5">
+                  <Wallet size={15} /> BTC
+                </button>
                 {canUseWeb3Login && (
                   <button onClick={() => handleLogin('web3')} className="px-3 py-2 bg-[#1a1a1a] border border-gray-700 text-white rounded-xl text-sm font-bold transition-transform active:scale-95 flex items-center gap-1.5">
                     <Wallet size={15} /> Web3
@@ -2034,14 +2120,28 @@ export default function App() {
       </main>
 
       {/* Modals */}
-      {!userName && !user && !authLoading && (
+      {!userName && !user && !authLoading && !welcomeSkipped && (
         <WelcomeModal
           onSave={setUserName}
           onLogin={() => handleLogin('google')}
           onWeb3Login={canUseWeb3Login ? () => handleLogin('web3') : undefined}
+          onBitcoinLogin={() => setShowBitcoinLoginModal(true)}
           canUseWeb3Login={canUseWeb3Login}
           loggingIn={loggingIn}
           loginMethod={loginMethod}
+          onSkip={() => {
+            localStorage.setItem('boa_welcome_skipped', '1');
+            setWelcomeSkipped(true);
+          }}
+        />
+      )}
+      {showBitcoinLoginModal && (
+        <BitcoinWalletLoginModal
+          loading={loggingIn && loginMethod === 'bitcoin'}
+          onClose={() => {
+            if (!loggingIn) setShowBitcoinLoginModal(false);
+          }}
+          onSubmit={handleBitcoinWalletLogin}
         />
       )}
       {isFormOpen && <SubscriptionForm subscription={editingSub} onSave={handleSave} onClose={() => setIsFormOpen(false)} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}

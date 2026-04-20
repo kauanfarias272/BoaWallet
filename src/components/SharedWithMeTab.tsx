@@ -116,7 +116,7 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
         .from('subscription_members')
         .select('*')
         .eq('member_id', userId)
-        .neq('payment_status', 'cancelled')
+        .or('payment_status.neq.cancelled,payment_status.is.null')
         .order('created_at', { ascending: false });
 
       if (error || !members) {

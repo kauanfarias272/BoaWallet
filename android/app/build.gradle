@@ -7,8 +7,8 @@ android {
         applicationId "io.boa.wallet"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 41
-        versionName "1.9.0"
+        versionCode 45
+        versionName "1.9.4"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -40,8 +40,12 @@ repositories {
 }
 
 dependencies {
+    // Embute o app Wear OS no AAB — Play Store entrega automaticamente ao relógio pareado
+    wearApp project(':wear')
+
     // Wearable Data Layer — comunicação com o app do relógio
     implementation 'com.google.android.gms:play-services-wearable:18.2.0'
+    implementation 'com.google.android.gms:play-services-nearby:19.3.0'
 
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"

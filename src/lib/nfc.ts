@@ -1,12 +1,6 @@
-/**
- * BoaWallet NFC Proximity — Beta
- *
- * Usa a Web NFC API (NDEFReader) disponível no Chrome 89+ Android.
- * Em WebView Capacitor, funciona quando o device suporta NFC e a permissão
- * foi concedida. Em iOS / desktop o feature é ignorado graciosamente.
- */
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
-export interface NfcBoaProfile {
+export interface BoaPeerProfile {
   app: 'BoaWallet';
   v: 1;
   userId: string;
@@ -14,82 +8,107 @@ export interface NfcBoaProfile {
   name?: string;
 }
 
-const PREFIX = 'boa:';
-
-/** Verifica se a Web NFC API está disponível no ambiente atual. */
-export function isNfcSupported(): boolean {
-  return typeof window !== 'undefined' && 'NDEFReader' in window;
+export interface NfcStatus {
+  available: boolean;
+  enabled: boolean;
+  hceSupported: boolean;
+  hasPayload: boolean;
 }
 
 export interface NfcScanHandle {
   stop: () => void;
 }
 
-/**
- * Inicia o escaneamento NFC em background.
- * Chama `onProfile` cada vez que um perfil BoaWallet é lido via NFC.
- * Retorna um handle com `.stop()` para encerrar o scan.
- */
-export async function startNfcScan(
-  onProfile: (profile: NfcBoaProfile) => void,
-  onError?: (err: Error) => void
-): Promise<NfcScanHandle> {
-  if (!isNfcSupported()) {
-    throw new Error('NotSupportedError: NDEFReader not available');
-  }
-
-  const controller = new AbortController();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const reader = new (window as any).NDEFReader();
-
-  reader.addEventListener('reading', ({ message }: any) => {
-    for (const record of message.records) {
-      try {
-        const text: string = new TextDecoder().decode(record.data);
-        if (!text.startsWith(PREFIX)) continue;
-        const profile = JSON.parse(text.slice(PREFIX.length)) as NfcBoaProfile;
-        if (profile.app === 'BoaWallet' && profile.userId && profile.username) {
-          onProfile(profile);
-        }
-      } catch {
-        // registro malformado — ignora
-      }
-    }
-  });
-
-  reader.addEventListener('readingerror', () => {
-    onError?.(new Error('NFC reading error'));
-  });
-
-  try {
-    await reader.scan({ signal: controller.signal });
-  } catch (rawErr: any) {
-    // Re-throw with the DOMException name prepended so callers can detect it
-    const name: string = rawErr?.name || '';
-    const message: string = rawErr?.message || String(rawErr);
-    const enriched = new Error(`${name}: ${message}`);
-    (enriched as any).originalName = name;
-    throw enriched;
-  }
-
-  return { stop: () => controller.abort() };
+interface NativeNfcBridgePlugin {
+  getStatus(): Promise<NfcStatus>;
+  setProfilePayload(options: { userId: string; username: string; name?: string }): Promise<void>;
+  clearProfilePayload(): Promise<void>;
+  startScan(): Promise<void>;
+  stopScan(): Promise<void>;
+  addListener(
+    eventName: 'profileDiscovered',
+    listenerFunc: (profile: BoaPeerProfile) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'scanError',
+    listenerFunc: (event: { message: string; code?: string }) => void,
+  ): Promise<PluginListenerHandle>;
+  removeAllListeners(): Promise<void>;
 }
 
-/**
- * Escreve o perfil do usuário atual num tag NFC / dispositivo próximo.
- * Ambos os dispositivos devem se aproximar — um escreve, o outro lê.
- */
-export async function writeNfcProfile(
-  profile: Omit<NfcBoaProfile, 'app' | 'v'>
-): Promise<void> {
-  if (!isNfcSupported()) {
-    throw new Error('NFC not supported');
+const NfcBridge = registerPlugin<NativeNfcBridgePlugin>('NfcBridge');
+
+const isNativeAndroid = () =>
+  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+
+export function isNfcSupported(): boolean {
+  return isNativeAndroid();
+}
+
+export async function getNfcStatus(): Promise<NfcStatus> {
+  if (!isNativeAndroid()) {
+    return {
+      available: false,
+      enabled: false,
+      hceSupported: false,
+      hasPayload: false,
+    };
   }
 
-  const full: NfcBoaProfile = { ...profile, app: 'BoaWallet', v: 1 };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const writer = new (window as any).NDEFReader();
-  await writer.write({
-    records: [{ recordType: 'text', data: PREFIX + JSON.stringify(full), lang: 'pt' }],
-  });
+  return NfcBridge.getStatus();
+}
+
+export async function prepareNfcProfileBroadcast(
+  profile: Omit<BoaPeerProfile, 'app' | 'v'>
+): Promise<void> {
+  if (!isNativeAndroid()) return;
+
+  await NfcBridge.setProfilePayload(profile);
+}
+
+export async function clearNfcProfileBroadcast(): Promise<void> {
+  if (!isNativeAndroid()) return;
+
+  await NfcBridge.clearProfilePayload();
+}
+
+export async function startNfcScan(
+  onProfile: (profile: BoaPeerProfile) => void,
+  onError?: (err: Error) => void
+): Promise<NfcScanHandle> {
+  if (!isNativeAndroid()) {
+    throw new Error('NFC is only available in the Android app.');
+  }
+
+  const listenerHandles: PluginListenerHandle[] = [];
+
+  try {
+    listenerHandles.push(
+      await NfcBridge.addListener('profileDiscovered', (profile) => {
+        onProfile(profile);
+      })
+    );
+
+    listenerHandles.push(
+      await NfcBridge.addListener('scanError', ({ message, code }) => {
+        const error = new Error(message || 'NFC scan failed');
+        (error as Error & { code?: string }).code = code;
+        onError?.(error);
+      })
+    );
+
+    await NfcBridge.startScan();
+  } catch (rawError) {
+    await Promise.all(listenerHandles.map((handle) => handle.remove()));
+    const message =
+      rawError instanceof Error ? rawError.message : String(rawError || 'NFC scan failed');
+    throw new Error(message);
+  }
+
+  return {
+    stop: () => {
+      void NfcBridge.stopScan();
+      void Promise.all(listenerHandles.map((handle) => handle.remove()));
+    },
+  };
 }

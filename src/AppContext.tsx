@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Language } from './i18n';
 import { auth as firebaseAuth } from './firebase';
@@ -66,12 +67,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
 
     const tryReauthFromFirebase = async () => {
-      const fbUser = firebaseAuth.currentUser;
-      if (!fbUser) return false;
-
       try {
-        console.log('[BoaWallet] Firebase active, refreshing Supabase session...');
-        const idToken = await fbUser.getIdToken(true);
+        const isNativePlatform = Capacitor.getPlatform() !== 'web';
+        let idToken: string | null = null;
+
+        if (isNativePlatform) {
+          // Native login now uses browser OAuth (PKCE) — Firebase native is bypassed.
+          // Skip Firebase reauth entirely on native; Supabase session is self-sufficient.
+          return false;
+        } else {
+          const fbUser = firebaseAuth.currentUser;
+          if (fbUser) {
+            console.log('[BoaWallet] Firebase web active, refreshing Supabase session...');
+            idToken = await fbUser.getIdToken(true);
+          }
+        }
+
+        if (!idToken) return false;
+
         const { data, error } = await supabase.auth.signInWithIdToken({
           provider: 'google',
           token: idToken,
@@ -112,13 +125,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await loadHandle(currentUser.id);
         setAuthLoading(false);
       } else {
-        const unsubFb = onAuthStateChanged(firebaseAuth, async (fbUser) => {
-          if (fbUser) {
-            await tryReauthFromFirebase();
-          }
+        const restored = await tryReauthFromFirebase();
+        if (restored) {
           setAuthLoading(false);
-          unsubFb();
-        });
+        } else {
+          const unsubFb = onAuthStateChanged(firebaseAuth, async (fbUser) => {
+            if (fbUser) {
+              await tryReauthFromFirebase();
+            }
+            setAuthLoading(false);
+            unsubFb();
+          });
+        }
       }
 
       const {
@@ -133,6 +151,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } else {
           setUserName('');
           setUserHandle('');
+          setGoogleAccessToken(null);
           localStorage.removeItem('userHandle');
         }
       });
@@ -157,6 +176,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     localStorage.setItem('userHandle', userHandle);
   }, [userHandle]);
+
+  useEffect(() => {
+    if (googleAccessToken) {
+      localStorage.setItem('googleAccessToken', googleAccessToken);
+    } else {
+      localStorage.removeItem('googleAccessToken');
+    }
+  }, [googleAccessToken]);
 
   const saveUserHandle = async (handle: string): Promise<{ ok: boolean; error?: string }> => {
     const clean = handle.replace('@', '').toLowerCase().trim();

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Lock, RefreshCw, Search, Smartphone, UserPlus, Users, X, Zap } from 'lucide-react';
+import { Bluetooth, Globe, Lock, RefreshCw, Search, Smartphone, UserPlus, Users, X, Zap } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { FriendProfile } from '../lib/friends';
 import { Subscription } from '../types';
@@ -8,7 +8,22 @@ import { formatCurrency } from '../lib/utils';
 import { supabase } from '../supabase';
 import { withTimeout } from '../lib/requestTimeout';
 import { FoundBoaUser, searchBoaUsers, searchCachedBoaUsers } from '../lib/userSearch';
-import { isNfcSupported, startNfcScan, NfcBoaProfile, NfcScanHandle } from '../lib/nfc';
+import { App as CapApp } from '@capacitor/app';
+import {
+  BoaPeerProfile,
+  clearNfcProfileBroadcast,
+  getNfcStatus,
+  isNfcSupported,
+  prepareNfcProfileBroadcast,
+  startNfcScan,
+  NfcScanHandle,
+} from '../lib/nfc';
+import {
+  getNearbyStatus,
+  isNearbySupported,
+  startNearbySession,
+  NearbySessionHandle,
+} from '../lib/nearbyPeople';
 
 interface FriendsModalProps {
   currentUserId: string;
@@ -62,16 +77,65 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
   const friendSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // NFC Beta
+  const [nearbyTab, setNearbyTab] = useState(false);
+  const nearbySupported = isNearbySupported();
+  const [nearbyActive, setNearbyActive] = useState(false);
+  const [nearbyError, setNearbyError] = useState('');
+  const [nearbyPeople, setNearbyPeople] = useState<BoaPeerProfile[]>([]);
+  const [nearbyAvailable, setNearbyAvailable] = useState<boolean | null>(null);
+  const [nearbyPermissionsOk, setNearbyPermissionsOk] = useState<boolean | null>(null);
+  const [nearbyNeedsLocation, setNearbyNeedsLocation] = useState(false);
+  const nearbySessionHandleRef = useRef<NearbySessionHandle | null>(null);
+
   const [nfcTab, setNfcTab] = useState(false);
   const nfcSupported = isNfcSupported();
   const [nfcActive, setNfcActive] = useState(false);
   const [nfcError, setNfcError] = useState('');
-  const [nearbyUsers, setNearbyUsers] = useState<NfcBoaProfile[]>([]);
+  const [nfcUsers, setNfcUsers] = useState<BoaPeerProfile[]>([]);
   const [addingNfcId, setAddingNfcId] = useState<string | null>(null);
   const nfcScanHandleRef = useRef<NfcScanHandle | null>(null);
+  const [nfcEnabled, setNfcEnabled] = useState<boolean | null>(null);
+  const [nfcBroadcastReady, setNfcBroadcastReady] = useState(false);
 
   const tx = (pt: string, en: string, es: string, it: string) =>
     ({ pt, en, es, it }[language] ?? en);
+
+  const hasNearbyProfile = !!currentUsername?.trim();
+
+  const refreshNativeStatus = async () => {
+    if (nfcSupported) {
+      try {
+        const status = await getNfcStatus();
+        setNfcEnabled(status.enabled);
+        setNfcBroadcastReady(status.hasPayload);
+      } catch {
+        setNfcEnabled(false);
+        setNfcBroadcastReady(false);
+      }
+    }
+
+    if (nearbySupported) {
+      try {
+        const status = await getNearbyStatus();
+        setNearbyAvailable(status.available);
+        setNearbyPermissionsOk(status.permissionsOk);
+        setNearbyNeedsLocation(status.needsLocation);
+      } catch {
+        setNearbyAvailable(false);
+        setNearbyPermissionsOk(false);
+        setNearbyNeedsLocation(false);
+      }
+    }
+  };
+
+  const stopNearbySession = () => {
+    const activeHandle = nearbySessionHandleRef.current;
+    if (activeHandle) {
+      activeHandle.stop();
+      nearbySessionHandleRef.current = null;
+    }
+    setNearbyActive(false);
+  };
 
   const stopNfcScan = () => {
     const activeHandle = nfcScanHandleRef.current;
@@ -82,76 +146,117 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     setNfcActive(false);
   };
 
-  const handleNfcProfileRead = (profile: NfcBoaProfile) => {
+  const handleNearbyProfileRead = (profile: BoaPeerProfile) => {
     if (profile.userId === currentUserId) return;
 
-    setNearbyUsers((prev: NfcBoaProfile[]) => {
-      if (prev.some((u: NfcBoaProfile) => u.userId === profile.userId)) return prev;
+    setNearbyPeople((prev: BoaPeerProfile[]) => {
+      if (prev.some((u: BoaPeerProfile) => u.userId === profile.userId)) return prev;
       return [profile, ...prev];
     });
   };
 
-  const handleNfcStartError = (err: Error) => {
-    const name: string = (err as any).originalName || err.message.split(':')[0] || '';
-    const msg = err.message.toLowerCase();
-    const isUserActivation =
-      msg.includes('user gesture') ||
-      msg.includes('user activation') ||
-      msg.includes('transient activation');
-    const isPermission =
-      name === 'NotAllowedError' ||
-      msg.includes('notallowederror') ||
-      msg.includes('not allowed') ||
-      msg.includes('permission');
-    const isDisabled =
-      name === 'NotSupportedError' ||
-      msg.includes('notsupportederror') ||
-      msg.includes('not supported') ||
-      msg.includes('not enabled') ||
-      msg.includes('nfc is not');
-    const isWebViewLimit =
-      msg.includes('embedded') ||
-      msg.includes('secure context') ||
-      msg.includes('cross-origin');
+  const handleNfcProfileRead = (profile: BoaPeerProfile) => {
+    if (profile.userId === currentUserId) return;
 
-    if (isUserActivation) {
+    setNfcUsers((prev: BoaPeerProfile[]) => {
+      if (prev.some((u: BoaPeerProfile) => u.userId === profile.userId)) return prev;
+      return [profile, ...prev];
+    });
+  };
+
+  const handleNearbyStartError = (err: Error) => {
+    const msg = err.message.toLowerCase();
+    const isPermissionDenied =
+      msg.includes('permission') ||
+      msg.includes('denied') ||
+      msg.includes('bluetooth_scan') ||
+      msg.includes('bluetooth_connect') ||
+      msg.includes('bluetooth_advertise');
+    const needsPlayServices =
+      msg.includes('play services') ||
+      msg.includes('google play');
+
+    if (isPermissionDenied) {
+      setNearbyError(tx(
+        'O Android negou o acesso de proximidade. Ao abrir a busca, permita Bluetooth e localizacao se o sistema pedir.',
+        'Android denied nearby access. When search opens, allow Bluetooth and location if the system asks.',
+        'Android nego el acceso de proximidad. Al abrir la busqueda, permite Bluetooth y ubicacion si el sistema lo pide.',
+        'Android ha negato l accesso di prossimita. Quando apri la ricerca, consenti Bluetooth e posizione se il sistema lo chiede.'
+      ));
+      void refreshNativeStatus();
+      return;
+    }
+
+    if (needsPlayServices) {
+      setNearbyError(tx(
+        'O Google Play Services nao esta pronto neste aparelho, entao a busca por perto nao pode iniciar.',
+        'Google Play services is not ready on this device, so nearby search cannot start.',
+        'Google Play services no esta listo en este dispositivo, asi que la busqueda cercana no puede iniciar.',
+        'Google Play Services non e pronto su questo dispositivo, quindi la ricerca vicina non puo iniziare.'
+      ));
+      void refreshNativeStatus();
+      return;
+    }
+
+    setNearbyError(
+      tx(
+        'Nao foi possivel procurar pessoas por Bluetooth',
+        'Could not search for people over Bluetooth',
+        'No se pudo buscar personas por Bluetooth',
+        'Impossibile cercare persone via Bluetooth'
+      ) + ': ' + (err.message || 'unknown')
+    );
+    void refreshNativeStatus();
+  };
+
+  const handleNfcStartError = (err: Error) => {
+    const msg = err.message.toLowerCase();
+    const isDisabled =
+      msg.includes('disabled') ||
+      msg.includes('not enabled') ||
+      msg.includes('nfc is disabled') ||
+      msg.includes('nfc_disabled');
+
+    if (isDisabled) {
       setNfcError(tx(
-        'Toque em "Ativar NFC" e aceite a permissao quando o Android pedir.',
-        'Tap "Enable NFC" and accept the permission when Android asks.',
-        'Toca "Activar NFC" y acepta el permiso cuando Android lo pida.',
-        'Tocca "Attiva NFC" e accetta il permesso quando Android lo richiede.'
+        'O NFC nativo esta desligado no Android. Ligue o NFC do telefone e tente de novo.',
+        'Native NFC is turned off on Android. Turn on NFC on the phone and try again.',
+        'El NFC nativo esta apagado en Android. Activa el NFC del telefono y prueba otra vez.',
+        'Il NFC nativo e disattivato su Android. Attiva l NFC del telefono e riprova.'
       ));
       return;
     }
 
-    if (isPermission) {
-      setNfcError(tx(
-        'Permissao NFC negada. Toque em "Ativar NFC" e permita o acesso no Android.',
-        'NFC permission denied. Tap "Enable NFC" and allow access on Android.',
-        'Permiso NFC denegado. Toca "Activar NFC" y permite el acceso en Android.',
-        'Permesso NFC negato. Tocca "Attiva NFC" e consenti l accesso su Android.'
-      ));
-    } else if (isWebViewLimit) {
-      setNfcError(tx(
-        'NFC via WebView tem limitacoes neste Android. Tente no Chrome.',
-        'NFC via WebView is limited on this Android. Try Chrome.',
-        'NFC via WebView tiene limitaciones. Prueba en Chrome.',
-        'NFC via WebView ha limitazioni. Prova su Chrome.'
-      ));
-    } else if (isDisabled) {
-      setNfcError(tx(
-        'NFC desabilitado ou nao suportado neste dispositivo.',
-        'NFC disabled or not supported on this device.',
-        'NFC deshabilitado o no compatible.',
-        'NFC disabilitato o non supportato.'
-      ));
-    } else {
-      setNfcError(tx(
-        'Erro ao iniciar NFC',
-        'Error starting NFC',
-        'Error al iniciar NFC',
-        'Errore NFC'
-      ) + ': ' + (err.message || 'unknown'));
+    setNfcError(tx(
+      'Nao foi possivel ler o perfil por NFC',
+      'Could not read the profile over NFC',
+      'No se pudo leer el perfil por NFC',
+      'Impossibile leggere il profilo via NFC'
+    ) + ': ' + (err.message || 'unknown'));
+  };
+
+  const handleStartNearby = async () => {
+    if (!nearbySupported || !hasNearbyProfile || !currentUsername) return;
+
+    stopNearbySession();
+    setNearbyError('');
+
+    try {
+      const handle = await startNearbySession(
+        {
+          userId: currentUserId,
+          username: currentUsername.trim().toLowerCase(),
+          name: currentName,
+        },
+        handleNearbyProfileRead,
+        handleNearbyStartError
+      );
+
+      nearbySessionHandleRef.current = handle;
+      setNearbyActive(true);
+      await refreshNativeStatus();
+    } catch (err) {
+      handleNearbyStartError(err as Error);
     }
   };
 
@@ -164,19 +269,30 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     try {
       const handle = await startNfcScan(
         handleNfcProfileRead,
-        () => setNfcError(tx(
-          'Erro ao ler NFC. Tente novamente.',
-          'NFC read error. Try again.',
-          'Error al leer NFC. Intentalo de nuevo.',
-          'Errore di lettura NFC. Riprova.'
-        ))
+        handleNfcStartError
       );
 
       nfcScanHandleRef.current = handle;
       setNfcActive(true);
+      await refreshNativeStatus();
     } catch (err) {
       handleNfcStartError(err as Error);
     }
+  };
+
+  const handleToggleNearbyTab = () => {
+    if (nearbyTab) {
+      stopNearbySession();
+      setNearbyError('');
+      setNearbyTab(false);
+      return;
+    }
+
+    stopNfcScan();
+    setNfcError('');
+    setNearbyPeople([]);
+    setNearbyTab(true);
+    setNfcTab(false);
   };
 
   const handleToggleNfcTab = () => {
@@ -187,13 +303,42 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
       return;
     }
 
-    setNearbyUsers([]);
+    stopNearbySession();
+    setNearbyError('');
+    setNfcUsers([]);
     setNfcError('');
     setNfcTab(true);
+    setNearbyTab(false);
   };
 
   useEffect(() => {
+    void refreshNativeStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!nfcSupported) return;
+
+    if (!hasNearbyProfile || !currentUsername) {
+      void clearNfcProfileBroadcast().finally(() => void refreshNativeStatus());
+      return;
+    }
+
+    void prepareNfcProfileBroadcast({
+      userId: currentUserId,
+      username: currentUsername.trim().toLowerCase(),
+      name: currentName,
+    })
+      .then(() => void refreshNativeStatus())
+      .catch((err: Error) => handleNfcStartError(err));
+
     return () => {
+      void clearNfcProfileBroadcast();
+    };
+  }, [currentName, currentUserId, currentUsername, hasNearbyProfile, nfcSupported]);
+
+  useEffect(() => {
+    return () => {
+      stopNearbySession();
       const activeHandle = nfcScanHandleRef.current;
       if (activeHandle) {
         activeHandle.stop();
@@ -201,6 +346,20 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
       }
     };
   }, []);
+
+  // Android back button: fecha painel BT/NFC aberto ou o modal inteiro
+  useEffect(() => {
+    const listenerPromise = CapApp.addListener('backButton', () => {
+      if (nearbyTab) {
+        handleToggleNearbyTab();
+      } else if (nfcTab) {
+        handleToggleNfcTab();
+      } else {
+        onClose();
+      }
+    });
+    return () => { listenerPromise.then((l) => l.remove()); };
+  }, [nearbyTab, nfcTab]);
 
   // ── NFC lifecycle ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -213,8 +372,8 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     startNfcScan(
       (profile) => {
         if (profile.userId === currentUserId) return; // ignora o próprio usuário
-        setNearbyUsers((prev: NfcBoaProfile[]) => {
-          if (prev.some((u: NfcBoaProfile) => u.userId === profile.userId)) return prev;
+        setNfcUsers((prev: BoaPeerProfile[]) => {
+          if (prev.some((u: BoaPeerProfile) => u.userId === profile.userId)) return prev;
           return [profile, ...prev];
         });
       },
@@ -246,17 +405,17 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
 
         if (isPermission) {
           setNfcError(tx(
-            'Permissão NFC negada. Ative nas configurações do sistema.',
-            'NFC permission denied. Enable it in system settings.',
-            'Permiso NFC denegado. Actívalo en la configuración.',
-            'Permesso NFC negato. Attivalo nelle impostazioni.'
+            'O NFC nativo esta desligado no Android. Ligue o NFC do telefone e tente de novo.',
+            'Native NFC is turned off on Android. Turn on NFC on the phone and try again.',
+            'El NFC nativo esta apagado en Android. Activa el NFC del telefono y prueba otra vez.',
+            'Il NFC nativo e disattivato su Android. Attiva l NFC del telefono e riprova.'
           ));
         } else if (isWebViewLimit) {
           setNfcError(tx(
-            'NFC via WebView tem limitações neste Android. Tente no Chrome.',
-            'NFC via WebView is limited on this Android. Try Chrome.',
-            'NFC via WebView tiene limitaciones. Prueba en Chrome.',
-            'NFC via WebView ha limitazioni. Prova su Chrome.'
+            'Este fluxo agora usa NFC nativo do Android dentro do app.',
+            'This flow now uses native Android NFC inside the app.',
+            'Este flujo ahora usa NFC nativo de Android dentro de la app.',
+            'Questo flusso ora usa il NFC nativo di Android dentro l app.'
           ));
         } else if (isDisabled) {
           setNfcError(tx(
@@ -282,7 +441,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     };
   }, [nfcTab, nfcSupported, currentUserId]);
 
-  const handleAddNfcFriend = async (profile: NfcBoaProfile) => {
+  const handleAddNfcFriend = async (profile: BoaPeerProfile) => {
     setAddingNfcId(profile.userId);
     const candidate: FoundBoaUser = {
       id: profile.userId,
@@ -291,7 +450,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     };
     try {
       await onAddFriend(candidate);
-      setNearbyUsers((prev: NfcBoaProfile[]) => prev.filter((u: NfcBoaProfile) => u.userId !== profile.userId));
+      setNfcUsers((prev: BoaPeerProfile[]) => prev.filter((u: BoaPeerProfile) => u.userId !== profile.userId));
     } finally {
       setAddingNfcId(null);
     }
@@ -439,6 +598,16 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {nearbySupported && (
+              <button
+                onClick={handleToggleNearbyTab}
+                title={tx('Adicionar por Bluetooth', 'Add via Bluetooth', 'Agregar por Bluetooth', 'Aggiungi via Bluetooth')}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-colors border ${nearbyTab ? 'bg-sky-500/12 border-sky-300/30 text-sky-100' : 'bg-[#1a1a1a] border-gray-700 text-gray-400 hover:text-white'}`}
+              >
+                <Bluetooth size={14} />
+                Bluetooth
+              </button>
+            )}
             {nfcSupported && (
               <button
                 onClick={handleToggleNfcTab}
@@ -456,8 +625,216 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
         </div>
 
         {/* ── NFC Tab ──────────────────────────────────────────────────── */}
+        {nearbyTab && nearbySupported && (
+          <div className="border-b border-gray-800 bg-[radial-gradient(circle_at_top,rgba(96,165,250,0.16),transparent_38%),linear-gradient(160deg,#10141c_0%,#0d1118_55%,#0b0d12_100%)] px-6 py-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-[10px] uppercase tracking-[0.28em] text-sky-200/70 font-semibold">
+                {tx('Bluetooth — pessoas por perto', 'Bluetooth — nearby people', 'Bluetooth — personas cercanas', 'Bluetooth — persone vicine')}
+              </p>
+              <button
+                onClick={handleToggleNearbyTab}
+                className="w-7 h-7 rounded-full bg-white/8 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white"
+                title={tx('Fechar', 'Close', 'Cerrar', 'Chiudi')}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="flex flex-col lg:flex-row lg:items-center gap-5 mb-5">
+              <div className="flex-1 flex items-center gap-4">
+                <div className="relative w-20 h-20 rounded-full shrink-0">
+                  <div className="absolute inset-0 rounded-full bg-sky-400/20 blur-2xl" />
+                  <div className={`absolute inset-2 rounded-full border ${nearbyActive ? 'border-sky-300/35 animate-pulse' : 'border-white/10'}`} />
+                  <div className="absolute inset-[1.15rem] rounded-full bg-white/8 border border-white/10 flex items-center justify-center">
+                    <Bluetooth size={24} className={nearbyActive ? 'text-sky-200' : 'text-gray-400'} />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.28em] text-sky-200/70 font-semibold mb-2">
+                    {tx('Proximidade premium', 'Premium proximity', 'Proximidad premium', 'Prossimita premium')}
+                  </p>
+                  <p className="text-white font-semibold text-lg">
+                    {tx(
+                      'Encontre pessoas por Bluetooth como um AirDrop do BoaWallet',
+                      'Find nearby people over Bluetooth like a BoaWallet AirDrop',
+                      'Encuentra personas por Bluetooth como un AirDrop de BoaWallet',
+                      'Trova persone via Bluetooth come un AirDrop di BoaWallet'
+                    )}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {tx(
+                      'Mantenha o app aberto nos dois celulares para aparecer aqui.',
+                      'Keep the app open on both phones to appear here.',
+                      'Mantiene la app abierta en ambos telefonos para aparecer aqui.',
+                      'Tieni l app aperta su entrambi i telefoni per apparire qui.'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="lg:w-[310px] rounded-3xl border border-white/10 bg-white/5 p-4 backdrop-blur-xl">
+                {!hasNearbyProfile ? (
+                  <p className="text-sm text-amber-200/90">
+                    {tx(
+                      'Defina um @username no app para poder aparecer para outras pessoas por perto.',
+                      'Set a @username in the app so nearby people can find you.',
+                      'Define un @username en la app para que otros te encuentren cerca.',
+                      'Imposta un @username nell app per farti trovare dalle persone vicine.'
+                    )}
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-white text-sm font-semibold">
+                      {nearbyActive
+                        ? tx('Bluetooth ativo', 'Bluetooth scanning', 'Bluetooth activo', 'Bluetooth attivo')
+                        : tx('Buscar pessoas por perto', 'Search nearby people', 'Buscar personas cercanas', 'Cerca persone vicine')}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {tx(
+                        'Funciona melhor que o fluxo antigo de celular com celular via NFC.',
+                        'Works better than the old phone-to-phone NFC flow.',
+                        'Funciona mejor que el flujo antiguo telefono con telefono por NFC.',
+                        'Funziona meglio del vecchio flusso telefono-telefono via NFC.'
+                      )}
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      <span className={`px-2.5 py-1.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.22em] border ${
+                        nearbyAvailable === null
+                          ? 'bg-white/5 border-white/10 text-gray-300'
+                          : nearbyAvailable === false
+                            ? 'bg-red-500/10 border-red-400/20 text-red-200'
+                            : 'bg-sky-500/10 border-sky-300/20 text-sky-100'
+                      }`}>
+                        {nearbyAvailable === null
+                          ? tx('Verificando', 'Checking', 'Verificando', 'Verifica')
+                          : nearbyAvailable === false
+                            ? tx('Servicos indisponiveis', 'Services unavailable', 'Servicios no disponibles', 'Servizi non disponibili')
+                            : tx('Bluetooth pronto', 'Bluetooth ready', 'Bluetooth listo', 'Bluetooth pronto')}
+                      </span>
+                      <span className={`px-2.5 py-1.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.22em] border ${
+                        nearbyPermissionsOk === null
+                          ? 'bg-white/5 border-white/10 text-gray-300'
+                          : nearbyPermissionsOk
+                            ? 'bg-emerald-500/10 border-emerald-400/20 text-emerald-300'
+                            : 'bg-white/5 border-white/10 text-gray-300'
+                      }`}>
+                        {nearbyPermissionsOk === null
+                          ? tx('Aguardando', 'Waiting', 'Esperando', 'In attesa')
+                          : nearbyPermissionsOk
+                            ? tx('Acesso liberado', 'Access granted', 'Acceso concedido', 'Accesso consentito')
+                            : tx('Permissao ao abrir', 'Allow on prompt', 'Permitir al abrir', 'Consenti all avvio')}
+                      </span>
+                    </div>
+                    {nearbyPermissionsOk === false && (
+                      <p className="text-[11px] text-gray-400 mt-3">
+                        {nearbyNeedsLocation
+                          ? tx(
+                              'No Android mais antigo, o sistema tambem pode pedir localizacao para achar pessoas por perto.',
+                              'On older Android, the system may also ask for location to find nearby people.',
+                              'En Android antiguo, el sistema tambien puede pedir ubicacion para encontrar personas cercanas.',
+                              'Su Android meno recente, il sistema puo anche chiedere la posizione per trovare persone vicine.'
+                            )
+                          : tx(
+                              'Ao tocar em Buscar agora, permita acesso Bluetooth quando o Android pedir.',
+                              'When you tap Start search, allow Bluetooth access when Android asks.',
+                              'Al tocar Buscar ahora, permite el acceso Bluetooth cuando Android lo pida.',
+                              'Quando tocchi Avvia ricerca, consenti l accesso Bluetooth quando Android lo chiede.'
+                            )}
+                      </p>
+                    )}
+                    <div className="flex gap-2 mt-4">
+                      {!nearbyActive ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleStartNearby()}
+                          disabled={!hasNearbyProfile || nearbyAvailable === false}
+                          className="flex-1 px-4 py-3 rounded-2xl bg-[#d0d0a0] text-[#0a0a0a] text-sm font-semibold disabled:opacity-40"
+                        >
+                          {tx('Buscar agora', 'Start search', 'Buscar ahora', 'Avvia ricerca')}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={stopNearbySession}
+                          className="flex-1 px-4 py-3 rounded-2xl bg-white/8 border border-white/10 text-white text-sm font-semibold"
+                        >
+                          {tx('Parar busca', 'Stop search', 'Detener busqueda', 'Ferma ricerca')}
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {nearbyError && (
+              <p className="text-xs text-red-300 bg-red-900/20 border border-red-800/40 rounded-2xl px-3 py-2 mb-4">{nearbyError}</p>
+            )}
+
+            {nearbyPeople.length > 0 ? (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {nearbyPeople.map((nearby: BoaPeerProfile) => (
+                  <div key={nearby.userId} className="relative overflow-hidden flex items-center gap-3 bg-[linear-gradient(160deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] border border-white/10 rounded-[1.6rem] px-4 py-4 backdrop-blur-xl shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(96,165,250,0.18),transparent_34%)]" />
+                    <div className="relative w-11 h-11 rounded-2xl bg-white/8 border border-white/10 flex items-center justify-center text-white font-bold shrink-0">
+                      {(nearby.name || nearby.username).charAt(0).toUpperCase()}
+                    </div>
+                    <div className="relative flex-1 min-w-0">
+                      <p className="text-white text-sm font-semibold truncate">{nearby.name || nearby.username}</p>
+                      <p className="text-xs text-sky-100/70 truncate">@{nearby.username}</p>
+                    </div>
+                    <div className="relative flex gap-2">
+                      {onShareSubscription && (
+                        <button
+                          type="button"
+                          onClick={() => onShareSubscription({ id: nearby.userId, username: nearby.username, name: nearby.name })}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/8 border border-white/10 text-white text-xs font-semibold"
+                        >
+                          <Zap size={11} />
+                          {tx('Assinatura', 'Share plan', 'Compartir plan', 'Condividi piano')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={addingNfcId === nearby.userId}
+                        onClick={() => handleAddNfcFriend(nearby)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#d0d0a0] text-[#0a0a0a] text-xs font-semibold disabled:opacity-50"
+                      >
+                        {addingNfcId === nearby.userId ? <RefreshCw size={12} className="animate-spin" /> : <UserPlus size={12} />}
+                        {tx('Adicionar', 'Add', 'Agregar', 'Aggiungi')}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-[1.6rem] border border-dashed border-white/10 bg-white/[0.03] px-6 py-10 text-center">
+                <div className="mx-auto w-14 h-14 rounded-full bg-white/6 border border-white/8 flex items-center justify-center mb-4">
+                  {nearbyActive ? <RefreshCw size={22} className="text-sky-200 animate-spin" /> : <Bluetooth size={22} className="text-gray-500" />}
+                </div>
+                <p className="text-white font-medium">
+                  {nearbyActive
+                    ? tx('Procurando pessoas por perto...', 'Scanning for nearby people...', 'Buscando personas cercanas...', 'Ricerca persone vicine...')
+                    : tx('Nenhuma pessoa encontrada ainda', 'No nearby person found yet', 'Ninguna persona encontrada aun', 'Nessuna persona trovata')}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {nfcTab && nfcSupported && (
           <div className="border-b border-gray-800 bg-[#111] px-6 py-5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] uppercase tracking-[0.28em] text-[#d0d0a0]/70 font-semibold">
+                NFC Beta
+              </p>
+              <button
+                onClick={handleToggleNfcTab}
+                className="w-7 h-7 rounded-full bg-white/8 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white"
+                title={tx('Fechar', 'Close', 'Cerrar', 'Chiudi')}
+              >
+                <X size={14} />
+              </button>
+            </div>
             <div className="flex items-center gap-3 mb-4">
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${nfcActive ? 'bg-[#2a2a1a] animate-pulse' : 'bg-[#222]'}`}>
                 <Smartphone size={22} className={nfcActive ? 'text-[#d0d0a0]' : 'text-gray-500'} />
@@ -465,22 +842,22 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
               <div>
                 <p className="text-white font-semibold text-sm">
                   {nfcActive
-                    ? tx('Aproxime os celulares…', 'Bring phones close…', 'Acerca los teléfonos…', 'Avvicina i telefoni…')
-                    : tx('Toque em Ativar NFC', 'Tap Enable NFC', 'Toca Activar NFC', 'Tocca Attiva NFC')}
+                    ? tx('Aproxime os celulares para ler o perfil', 'Bring the phones together to read the profile', 'Acerca los telefonos para leer el perfil', 'Avvicina i telefoni per leggere il profilo')
+                    : tx('Modo nativo: um celular le, o outro anuncia', 'Native mode: one phone reads, the other announces', 'Modo nativo: un telefono lee, el otro anuncia', 'Modo nativo: un telefono legge, l altro annuncia')}
                 </p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {nfcActive
                     ? tx(
-                        'Ambos precisam estar com esta aba aberta',
-                        'Both need this tab open',
-                        'Ambos deben tener esta pestaña abierta',
-                        'Entrambi devono avere questa scheda aperta'
+                        'Deixe o outro aparelho com o app aberto e aproxime os dois',
+                        'Keep the other device with the app open and bring both phones together',
+                        'Deja el otro dispositivo con la app abierta y acerca ambos telefonos',
+                        'Tieni l altro dispositivo con l app aperta e avvicina i due telefoni'
                       )
                     : tx(
-                        'O Android pode pedir permissão só depois desse toque',
-                        'Android may ask for permission only after this tap',
-                        'Android puede pedir permiso solo después de este toque',
-                        'Android potrebbe chiedere il permesso solo dopo questo tocco'
+                        'Esse fluxo nao depende mais do Web NFC da WebView',
+                        'This flow no longer depends on Web NFC inside the WebView',
+                        'Este flujo ya no depende del Web NFC dentro de la WebView',
+                        'Questo flusso non dipende piu dal Web NFC dentro la WebView'
                       )}
                 </p>
               </div>
@@ -489,8 +866,8 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
                   {[0,1,2].map((i) => (
                     <div
                       key={i}
-                      className="w-2 h-2 rounded-full bg-[#d0d0a0]"
-                      style={{ animation: `ping 1.4s ease-in-out ${i * 0.3}s infinite` }}
+                      className="w-2 h-2 rounded-full bg-[#d0d0a0] animate-ping"
+                      style={{ animationDelay: `${i * 0.3}s` }}
                     />
                   ))}
                 </div>
@@ -501,35 +878,77 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
               <p className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-xl px-3 py-2 mb-3">{nfcError}</p>
             )}
 
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className={`px-2.5 py-1.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.22em] border ${
+                nfcEnabled === null
+                  ? 'bg-white/5 border-white/10 text-gray-300'
+                  : nfcEnabled
+                    ? 'bg-emerald-500/10 border-emerald-400/20 text-emerald-300'
+                    : 'bg-red-500/10 border-red-400/20 text-red-200'
+              }`}>
+                {nfcEnabled === null
+                  ? tx('Verificando NFC', 'Checking NFC', 'Verificando NFC', 'Verifica NFC')
+                  : nfcEnabled
+                    ? tx('NFC ligado', 'NFC enabled', 'NFC activo', 'NFC attivo')
+                    : tx('NFC desligado', 'NFC disabled', 'NFC apagado', 'NFC disattivato')}
+              </span>
+              <span className={`px-2.5 py-1.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.22em] border ${nfcBroadcastReady ? 'bg-[#d0d0a0]/10 border-[#d0d0a0]/25 text-[#e8e8c0]' : 'bg-white/5 border-white/10 text-gray-400'}`}>
+                {nfcBroadcastReady ? tx('Perfil pronto', 'Profile ready', 'Perfil listo', 'Profilo pronto') : tx('Sem perfil anunciado', 'No profile announced', 'Sin perfil anunciado', 'Nessun profilo annunciato')}
+              </span>
+            </div>
+
+            {!nfcBroadcastReady && hasNearbyProfile && (
+              <p className="text-[11px] text-gray-500 mb-4">
+                {tx(
+                  'Abra esta tela no outro aparelho por alguns segundos para ele anunciar seu perfil nativo por NFC.',
+                  'Open this screen on the other device for a few seconds so it can announce its native NFC profile.',
+                  'Abre esta pantalla en el otro dispositivo unos segundos para que anuncie su perfil nativo por NFC.',
+                  'Apri questa schermata sull altro dispositivo per qualche secondo cosi puo annunciare il suo profilo NFC nativo.'
+                )}
+              </p>
+            )}
+
+            {!hasNearbyProfile && (
+              <p className="text-[11px] text-amber-200/80 mb-4">
+                {tx(
+                  'Defina um @username para que outro celular consiga ler seu perfil por NFC.',
+                  'Set a @username so another phone can read your profile over NFC.',
+                  'Define un @username para que otro telefono pueda leer tu perfil por NFC.',
+                  'Imposta un @username cosi un altro telefono puo leggere il tuo profilo via NFC.'
+                )}
+              </p>
+            )}
+
             {!nfcActive && (
               <div className="flex items-center gap-2 mb-4">
                 <button
                   type="button"
                   onClick={() => void handleStartNfc()}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#2a2a1a] border border-[#5A5A40] text-[#d0d0a0] text-xs font-semibold hover:bg-[#333320] transition-colors"
+                  disabled={nfcEnabled === false}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#2a2a1a] border border-[#5A5A40] text-[#d0d0a0] text-xs font-semibold hover:bg-[#333320] transition-colors disabled:opacity-40"
                 >
                   <Smartphone size={13} />
                   {nfcError
                     ? tx('Tentar novamente', 'Try again', 'Intentar de nuevo', 'Riprova')
-                    : tx('Ativar NFC', 'Enable NFC', 'Activar NFC', 'Attiva NFC')}
+                    : tx('Ler por NFC', 'Read via NFC', 'Leer por NFC', 'Leggi via NFC')}
                 </button>
                 <p className="text-[11px] text-gray-600">
                   {tx(
-                    'Isso abre o pedido de acesso correto do Android',
-                    'This triggers the proper Android access prompt',
-                    'Esto abre el aviso correcto de acceso en Android',
-                    'Questo apre la richiesta corretta di accesso su Android'
+                    'Um telefone fica pronto para toque. O outro entra em modo leitor.',
+                    'One phone stays ready for tap. The other enters reader mode.',
+                    'Un telefono queda listo para tocar. El otro entra en modo lector.',
+                    'Un telefono resta pronto al tocco. L altro entra in modalita lettore.'
                   )}
                 </p>
               </div>
             )}
 
-            {nearbyUsers.length > 0 ? (
+            {nfcUsers.length > 0 ? (
               <div className="space-y-2">
                 <p className="text-[10px] uppercase tracking-widest text-gray-500 font-semibold mb-2">
                   {tx('Encontrados por NFC', 'Found via NFC', 'Encontrados por NFC', 'Trovati via NFC')}
                 </p>
-                {nearbyUsers.map((nearby: NfcBoaProfile) => (
+                {nfcUsers.map((nearby: BoaPeerProfile) => (
                   <div key={nearby.userId} className="flex items-center gap-3 bg-[#1a1a1a] border border-[#3a3a2a] rounded-2xl px-4 py-3">
                     <div className="w-10 h-10 rounded-full bg-[#2a2a1a] border border-[#5A5A40] flex items-center justify-center text-[#d0d0a0] font-bold shrink-0">
                       {(nearby.name || nearby.username).charAt(0).toUpperCase()}
@@ -546,7 +965,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#222] border border-gray-700 text-gray-300 text-xs font-semibold hover:border-[#5A5A40] hover:text-[#d0d0a0] transition-colors"
                         >
                           <Zap size={11} />
-                          {tx('Compartilhar', 'Share', 'Compartir', 'Condividi')}
+                          {tx('Assinatura', 'Share plan', 'Compartir plan', 'Condividi piano')}
                         </button>
                       )}
                       <button
@@ -564,7 +983,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
               </div>
             ) : nfcActive ? (
               <p className="text-xs text-gray-600 text-center py-2">
-                {tx('Nenhum usuário detectado ainda…', 'No user detected yet…', 'Ningún usuario detectado…', 'Nessun utente rilevato…')}
+                {tx('Nenhum usuario detectado ainda...', 'No user detected yet...', 'Ningun usuario detectado aun...', 'Nessun utente rilevato ancora...')}
               </p>
             ) : null}
           </div>
