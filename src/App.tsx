@@ -1210,7 +1210,6 @@ export default function App() {
       share_credentials: !!(member.shareCredentials ?? existingRowsByMemberId.get(String(member.userId))?.share_credentials),
       credentials_unlocked: !!(member.credentialsUnlocked ?? existingRowsByMemberId.get(String(member.userId))?.credentials_unlocked),
       platform_fee_sats: Number(member.platformFeeSats ?? existingRowsByMemberId.get(String(member.userId))?.platform_fee_sats ?? 0),
-      guarantee_sats: Number(member.guaranteeSats ?? existingRowsByMemberId.get(String(member.userId))?.guarantee_sats ?? 0),
       last_paid_at: member.lastPaidAt || existingRowsByMemberId.get(String(member.userId))?.last_paid_at || null,
       next_payment_due_at: member.nextPaymentDueAt || existingRowsByMemberId.get(String(member.userId))?.next_payment_due_at || null,
       pending_release_until: member.pendingReleaseUntil || existingRowsByMemberId.get(String(member.userId))?.pending_release_until || null,
@@ -1749,25 +1748,193 @@ export default function App() {
   // --- Export/Import ---
   const exportPDF = async () => {
     try {
-      const doc = new jsPDF();
-      const pageWidth = doc.internal.pageSize.width;
-      doc.setFontSize(20);
-      doc.text('Boa Wallet - Relatório v1.7', pageWidth / 2, 20, { align: 'center' });
-      
+      const QRCode = (await import('qrcode')).default;
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pw = doc.internal.pageSize.width;   // 210
+      const ph = doc.internal.pageSize.height;  // 297
+
+      const olive    = [90,  90,  64]  as [number,number,number];
+      const cream    = [208, 208, 160] as [number,number,number];
+      const ink      = [18,  18,  18]  as [number,number,number];
+      const muted    = [110, 110, 110] as [number,number,number];
+      const white    = [255, 255, 255] as [number,number,number];
+      const bg       = [248, 248, 244] as [number,number,number];
+      const divider  = [220, 220, 210] as [number,number,number];
+
+      // ── Header band ─────────────────────────────────────────────
+      doc.setFillColor(...ink);
+      doc.rect(0, 0, pw, 38, 'F');
+
+      // Logo mark
+      doc.setFillColor(...cream);
+      doc.roundedRect(12, 8, 22, 22, 4, 4, 'F');
+      doc.setTextColor(...ink);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('B', 23, 23, { align: 'center' });
+
+      // App name + tagline
+      doc.setTextColor(...cream);
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Boa Wallet', 40, 20);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(...muted);
+      doc.text(language === 'pt' ? 'Gestor de assinaturas & carteira Bitcoin' :
+               language === 'es' ? 'Gestor de suscripciones & cartera Bitcoin' :
+               language === 'it' ? 'Gestore abbonamenti & portafoglio Bitcoin' :
+               'Subscription manager & Bitcoin wallet', 40, 27);
+
+      // Date right-aligned in header
+      const dateStr = new Date().toLocaleDateString(
+        language === 'pt' ? 'pt-BR' : language === 'es' ? 'es-ES' : language === 'it' ? 'it-IT' : 'en-US',
+        { year: 'numeric', month: 'long', day: 'numeric' }
+      );
+      doc.setTextColor(...muted);
+      doc.setFontSize(7.5);
+      doc.text(dateStr, pw - 12, 22, { align: 'right' });
+
+      if (userName) {
+        doc.setTextColor(180, 180, 150);
+        doc.setFontSize(7);
+        doc.text(userName, pw - 12, 29, { align: 'right' });
+      }
+
+      // ── Background ───────────────────────────────────────────────
+      doc.setFillColor(...bg);
+      doc.rect(0, 38, pw, ph - 38, 'F');
+
+      // ── Summary cards ────────────────────────────────────────────
       const activeSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
-      const data = activeSubs.map(s => [s.name, s.category, formatCurrency(getEffectiveTotalCost(s).amount, s.costCurrency)]);
-      autoTable(doc, { head: [['Nome', 'Categoria', 'Custo']], body: data, startY: 30 });
-      
+      const totalMonthly = activeSubs.reduce((sum, s) => {
+        const cost = getEffectiveTotalCost(s);
+        const converted = convertCurrency(cost.amount, cost.currency as Currency, baseCurrency, exchangeRates);
+        const cycles: Record<string, number> = { weekly: 4.33, biweekly: 2.17, monthly: 1, quarterly: 1/3, semiannual: 1/6, annual: 1/12 };
+        return sum + converted * (cycles[s.billingCycle] ?? 1);
+      }, 0);
+
+      const cardY = 44;
+      const cardH = 20;
+      const cardW = (pw - 30) / 3;
+      const cards = [
+        { label: language === 'pt' ? 'Assinaturas ativas' : language === 'es' ? 'Activas' : language === 'it' ? 'Attivi' : 'Active subs', value: String(activeSubs.length) },
+        { label: language === 'pt' ? 'Gasto mensal' : language === 'es' ? 'Gasto mensual' : language === 'it' ? 'Spesa mensile' : 'Monthly spend', value: formatCurrency(totalMonthly, baseCurrency) },
+        { label: language === 'pt' ? 'Gasto anual' : language === 'es' ? 'Gasto anual' : language === 'it' ? 'Spesa annuale' : 'Annual spend', value: formatCurrency(totalMonthly * 12, baseCurrency) },
+      ];
+      cards.forEach((card, i) => {
+        const cx = 12 + i * (cardW + 3);
+        doc.setFillColor(...white);
+        doc.setDrawColor(...divider);
+        doc.setLineWidth(0.3);
+        doc.roundedRect(cx, cardY, cardW, cardH, 3, 3, 'FD');
+
+        doc.setTextColor(...muted);
+        doc.setFontSize(6.5);
+        doc.setFont('helvetica', 'normal');
+        doc.text(card.label.toUpperCase(), cx + cardW / 2, cardY + 6.5, { align: 'center' });
+
+        doc.setTextColor(...ink);
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.text(card.value, cx + cardW / 2, cardY + 14.5, { align: 'center' });
+      });
+
+      // ── Table ────────────────────────────────────────────────────
+      const tableStartY = cardY + cardH + 6;
+
+      const categories: string[] = Array.from(new Set(activeSubs.map((s: Subscription) => s.category || (language === 'pt' ? 'Outros' : 'Other'))));
+      const tableBody: (string | { content: string; styles: any })[][] = [];
+      const catRowIndexes: number[] = [];
+
+      for (const cat of categories) {
+        const catSubs = activeSubs.filter(s => (s.category || (language === 'pt' ? 'Outros' : 'Other')) === cat);
+        catRowIndexes.push(tableBody.length);
+        tableBody.push([{ content: cat.toUpperCase(), styles: { fontStyle: 'bold', textColor: olive, fillColor: [244, 244, 238], colSpan: 3 } }]);
+        for (const s of catSubs) {
+          const cost = getEffectiveTotalCost(s);
+          tableBody.push([
+            s.name,
+            s.billingCycle === 'monthly' ? (language === 'pt' ? 'Mensal' : language === 'es' ? 'Mensual' : language === 'it' ? 'Mensile' : 'Monthly') :
+            s.billingCycle === 'annual'  ? (language === 'pt' ? 'Anual'  : language === 'es' ? 'Anual'   : language === 'it' ? 'Annuale' : 'Annual') :
+            s.billingCycle ?? '—',
+            formatCurrency(cost.amount, cost.currency),
+          ]);
+        }
+      }
+
+      autoTable(doc, {
+        startY: tableStartY,
+        head: [[
+          language === 'pt' ? 'Assinatura' : language === 'es' ? 'Suscripcion' : language === 'it' ? 'Abbonamento' : 'Subscription',
+          language === 'pt' ? 'Ciclo' : language === 'es' ? 'Ciclo' : language === 'it' ? 'Ciclo' : 'Cycle',
+          language === 'pt' ? 'Custo' : language === 'es' ? 'Costo' : language === 'it' ? 'Costo' : 'Cost',
+        ]],
+        body: tableBody,
+        margin: { left: 12, right: 12 },
+        styles: {
+          font: 'helvetica',
+          fontSize: 8.5,
+          cellPadding: { top: 3.5, bottom: 3.5, left: 5, right: 5 },
+          textColor: ink,
+        },
+        headStyles: {
+          fillColor: ink,
+          textColor: cream,
+          fontStyle: 'bold',
+          fontSize: 8,
+        },
+        alternateRowStyles: { fillColor: [252, 252, 249] },
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 32, halign: 'center' },
+          2: { cellWidth: 38, halign: 'right', fontStyle: 'bold' },
+        },
+        tableLineColor: divider,
+        tableLineWidth: 0.2,
+      });
+
+      // ── Footer ───────────────────────────────────────────────────
+      const footerY = ph - 22;
+      doc.setDrawColor(...divider);
+      doc.setLineWidth(0.3);
+      doc.line(12, footerY, pw - 12, footerY);
+
+      // QR code — Play Store link
+      const playStoreUrl = 'https://play.google.com/store/apps/details?id=io.boa.wallet';
+      try {
+        const qrDataUrl = await QRCode.toDataURL(playStoreUrl, { width: 80, margin: 1, color: { dark: '#121212', light: '#f8f8f4' } });
+        const qrSize = 16;
+        doc.addImage(qrDataUrl, 'PNG', pw - 12 - qrSize, footerY + 3, qrSize, qrSize);
+        doc.setTextColor(...muted);
+        doc.setFontSize(6);
+        doc.setFont('helvetica', 'normal');
+        doc.text(language === 'pt' ? 'Baixar na Play Store' : language === 'es' ? 'Descargar en Play Store' : language === 'it' ? 'Scarica dal Play Store' : 'Get on Play Store', pw - 12 - qrSize / 2, footerY + 21, { align: 'center' });
+      } catch {
+        // QR failed silently — footer still renders
+      }
+
+      doc.setTextColor(...muted);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.text('boawallet.app', 12, footerY + 8);
+      doc.setFontSize(6.5);
+      doc.text(
+        language === 'pt' ? `${activeSubs.length} assinaturas exportadas em ${dateStr}` :
+        language === 'es' ? `${activeSubs.length} suscripciones exportadas el ${dateStr}` :
+        language === 'it' ? `${activeSubs.length} abbonamenti esportati il ${dateStr}` :
+        `${activeSubs.length} subscriptions exported on ${dateStr}`,
+        12, footerY + 14
+      );
+
+      // ── Save / share ─────────────────────────────────────────────
+      const filename = `boa-wallet-${new Date().toISOString().slice(0, 10)}.pdf`;
       if (Capacitor.isNativePlatform()) {
-         const pdfBase64 = doc.output('datauristring').split(',')[1];
-         const result = await Filesystem.writeFile({
-            path: 'boa-wallet-report.pdf',
-            data: pdfBase64,
-            directory: Directory.Cache
-         });
-         await Share.share({ title: 'Boa Wallet Report', url: result.uri });
+        const pdfBase64 = doc.output('datauristring').split(',')[1];
+        const result = await Filesystem.writeFile({ path: filename, data: pdfBase64, directory: Directory.Cache });
+        await Share.share({ title: 'Boa Wallet', url: result.uri });
       } else {
-         doc.save('boa-wallet-report.pdf');
+        doc.save(filename);
       }
     } catch (err: any) {
       console.error('PDF generation error', err);

@@ -92,7 +92,11 @@ export async function getReservedGuaranteeSats(userId: string) {
     .eq('payment_type', 'monthly')
     .in('payment_status', ['active', 'paid', 'overdue']);
 
-  if (error) throw error;
+  // Column may not exist yet in older DB schemas — treat as 0 gracefully
+  if (error) {
+    if (error.code === '42703' || error.message?.toLowerCase().includes('guarantee_sats')) return 0;
+    throw error;
+  }
 
   return (((data as { guarantee_sats?: number }[] | null) || []).reduce(
     (total, row) => total + toSafeInt(row.guarantee_sats),
@@ -234,7 +238,6 @@ export async function chargeSharedMembership(params: {
       payment_status: params.paymentType === 'monthly' ? 'active' : 'paid',
       bitcoin_amount_sats: preview.sellerAmountSats,
       platform_fee_sats: preview.platformFeeSats,
-      guarantee_sats: preview.guaranteeSats,
       credentials_unlocked: params.releaseCredentials,
       last_paid_at: nowIso,
       next_payment_due_at: nextPaymentDueAt,
@@ -292,7 +295,6 @@ export async function disputeLatestSharedMembershipPayment(params: {
     .update({
       accepted: false,
       payment_status: 'disputed',
-      guarantee_sats: 0,
       credentials_unlocked: false,
       pending_release_until: null,
       next_payment_due_at: null,
@@ -311,7 +313,7 @@ export async function processRecurringMemberships(userId: string) {
 
   const { data, error } = await supabase
     .from('subscription_members')
-    .select('id,subscription_id,owner_id,member_id,payment_type,payment_status,bitcoin_amount_sats,guarantee_sats,next_payment_due_at')
+    .select('id,subscription_id,owner_id,member_id,payment_type,payment_status,bitcoin_amount_sats,next_payment_due_at')
     .eq('member_id', userId)
     .eq('payment_type', 'monthly')
     .in('payment_status', ['active', 'paid', 'overdue'])

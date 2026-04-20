@@ -58,7 +58,7 @@ interface Props {
   onShareWithUser: (user: FoundUser) => void;
 }
 
-type Tab = 'received' | 'users';
+type Tab = 'received' | 'sent' | 'users';
 type PayState = 'idle' | 'paying' | 'paid' | 'error';
 
 type TFn = ReturnType<typeof useTranslation>;
@@ -93,7 +93,9 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
   const t = useTranslation(language);
   const [tab, setTab] = useState<Tab>('received');
   const [entries, setEntries] = useState<SharedEntry[]>([]);
+  const [sentEntries, setSentEntries] = useState<SharedEntry[]>([]);
   const [loadingEntries, setLoadingEntries] = useState(true);
+  const [loadingSent, setLoadingSent] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [walletSnapshot, setWalletSnapshot] = useState<WalletSnapshot | null>(null);
   const [query, setQuery] = useState('');
@@ -156,8 +158,57 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
     }
   };
 
+  // Fetch subscriptions the current user shared WITH others (as owner)
+  const fetchSent = async () => {
+    setLoadingSent(true);
+    try {
+      const { data: members, error } = await supabase
+        .from('subscription_members')
+        .select('*')
+        .eq('owner_id', userId)
+        .or('payment_status.neq.cancelled,payment_status.is.null')
+        .order('created_at', { ascending: false });
+
+      if (error || !members) {
+        setSentEntries([]);
+        return;
+      }
+
+      const enriched = await Promise.all(
+        members.map(async (member: SharedEntry) => {
+          const [{ data: subscription }, { data: memberProfile }] = await Promise.all([
+            supabase
+              .from('subscriptions')
+              .select('id,name,emoji,logoUrl,costAmount,costCurrency,billingCycle')
+              .eq('id', member.subscription_id)
+              .single(),
+            supabase
+              .from('users')
+              .select('id,name,username')
+              .eq('id', member.member_id)
+              .single(),
+          ]);
+
+          return {
+            ...member,
+            subscription: subscription ?? undefined,
+            // reuse owner field to hold the member profile for display purposes
+            owner: (memberProfile as any) ?? undefined,
+          };
+        })
+      );
+
+      setSentEntries(enriched.filter((e) => !!e.subscription));
+    } catch {
+      setSentEntries([]);
+    } finally {
+      setLoadingSent(false);
+    }
+  };
+
   useEffect(() => {
     void fetchShared();
+    void fetchSent();
     void fetchWallet();
   }, [userId]);
 
@@ -261,6 +312,18 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
           )}
         </button>
         <button
+          onClick={() => { setTab('sent'); void fetchSent(); }}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${tab === 'sent' ? 'bg-[#d0d0a0] text-[#0a0a0a]' : 'text-gray-500 hover:text-white'}`}
+        >
+          <Share2 size={14} />
+          {language === 'pt' ? 'Enviados' : language === 'es' ? 'Enviados' : language === 'it' ? 'Inviati' : 'Sent'}
+          {sentEntries.length > 0 && (
+            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${tab === 'sent' ? 'bg-[#0a0a0a]/30 text-[#0a0a0a]' : 'bg-[#5A5A40] text-[#d0d0a0]'}`}>
+              {sentEntries.length}
+            </span>
+          )}
+        </button>
+        <button
           onClick={() => setTab('users')}
           className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${tab === 'users' ? 'bg-[#d0d0a0] text-[#0a0a0a]' : 'text-gray-500 hover:text-white'}`}
         >
@@ -355,6 +418,76 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </>
+      )}
+
+      {tab === 'sent' && (
+        <>
+          {loadingSent ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-500">
+              <RefreshCw size={22} className="animate-spin" />
+              <p className="text-sm">{t('shared.loading')}</p>
+            </div>
+          ) : sentEntries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-[#1a1a1a] border border-gray-800 flex items-center justify-center">
+                <Share2 size={28} className="text-gray-600" />
+              </div>
+              <div>
+                <p className="text-gray-400 font-medium">
+                  {language === 'pt' ? 'Nenhum compartilhamento enviado' : language === 'es' ? 'Sin compartidos enviados' : language === 'it' ? 'Nessuna condivisione inviata' : 'No shares sent'}
+                </p>
+                <p className="text-gray-600 text-sm mt-1">
+                  {language === 'pt' ? 'As assinaturas que voce compartilhou com amigos apareceram aqui.' : language === 'es' ? 'Aqui apareceran las suscripciones que compartes con amigos.' : language === 'it' ? 'Gli abbonamenti condivisi con amici appariranno qui.' : 'Subscriptions you share with friends will appear here.'}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {sentEntries.map((entry) => {
+                const memberName = entry.owner?.name || entry.owner?.username || entry.member_id.slice(0, 8);
+                const memberHandle = entry.owner?.username ? `@${entry.owner.username}` : null;
+                const statusColors: Record<string, string> = {
+                  unpaid: 'bg-amber-500/15 text-amber-300 border-amber-500/25',
+                  paid: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
+                  active: 'bg-sky-500/15 text-sky-300 border-sky-500/25',
+                  overdue: 'bg-red-500/15 text-red-300 border-red-500/25',
+                  disputed: 'bg-orange-500/15 text-orange-300 border-orange-500/25',
+                  cancelled: 'bg-gray-500/15 text-gray-400 border-gray-500/25',
+                };
+                const statusLabel = entry.payment_status || 'unpaid';
+                const statusClass = statusColors[statusLabel] || statusColors.unpaid;
+
+                return (
+                  <div key={entry.id} className="bg-[#1a1a1a] border border-gray-800 rounded-2xl p-4 flex items-center gap-4">
+                    <div className="w-11 h-11 rounded-2xl bg-[#111] border border-gray-800 flex items-center justify-center text-xl shrink-0">
+                      {entry.subscription?.emoji || '📦'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-semibold truncate">{entry.subscription?.name || '—'}</p>
+                      <p className="text-gray-500 text-xs mt-0.5 truncate">
+                        {memberHandle ? <span className="text-[#d0d0a0]">{memberHandle}</span> : memberName}
+                        {!memberHandle && <span className="ml-1 text-gray-600">· {memberName}</span>}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className="text-white text-sm font-semibold">
+                        {formatCurrency(entry.amount, entry.currency)}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${statusClass}`}>
+                        {statusLabel}
+                      </span>
+                      {!entry.accepted && (
+                        <span className="text-[10px] text-amber-400">
+                          {language === 'pt' ? 'aguardando' : language === 'es' ? 'pendiente' : language === 'it' ? 'in attesa' : 'pending'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </>

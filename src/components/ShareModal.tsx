@@ -142,7 +142,6 @@ export function ShareModal({
           share_credentials: shareCredentials,
           credentials_unlocked: false,
           platform_fee_sats: paymentMode === 'bitcoin' ? preview.platformFeeSats : 0,
-          guarantee_sats: paymentMode === 'bitcoin' ? preview.guaranteeSats : 0,
           public_join: false,
         }),
         5000,
