@@ -13,7 +13,7 @@ import { LightningWallet } from './components/LightningWallet';
 import { PublicMarketplaceModal } from './components/PublicMarketplaceModal';
 import { BitcoinWalletLoginModal } from './components/BitcoinWalletLoginModal';
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember, BillingCycle } from './types';
-import { Plus, AlertTriangle, LogOut, Download, Upload, FileText, DollarSign, Database, Settings, Users, Wallet, Globe } from 'lucide-react';
+import { Plus, AlertTriangle, LogOut, Download, Upload, FileText, DollarSign, Database, Settings, Users, Globe } from 'lucide-react';
 import { useAppContext } from './AppContext';
 import { useTranslation, Language } from './i18n';
 import { supabase } from './supabase';
@@ -22,6 +22,7 @@ import { collection, query, where, getDocs, setDoc, doc, deleteDoc } from 'fireb
 import { signOut as firebaseSignOut } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -171,6 +172,8 @@ export default function App() {
   const handleOAuthUrl = async (url: string) => {
     if (!url.startsWith('io.boa.wallet://auth')) return;
     console.log('[BoaWallet] Handling OAuth URL:', url);
+    // Close the Chrome Custom Tab immediately so the user lands back in the app
+    try { await Browser.close(); } catch { /* not open — ignore */ }
     try {
       // Normalize custom scheme → https so URLSearchParams parsing is reliable in all environments
       const normalizedUrl = url.replace('io.boa.wallet://auth', 'https://boawallet.app/auth');
@@ -673,7 +676,8 @@ export default function App() {
       }
       if (isNativePlatform) {
         // Bypass Firebase native entirely — SHA-1 mismatch in Play Store AAB causes DEVELOPER_ERROR.
-        // Go straight to Supabase browser OAuth (PKCE); session arrives via appUrlOpen deep-link.
+        // Use Chrome Custom Tab via @capacitor/browser — it reliably intercepts custom-scheme redirects,
+        // whereas window.open(_system) leaves the user stuck in Chrome after Google auth completes.
         try {
           const { data: oauthData, error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: 'google',
@@ -683,8 +687,7 @@ export default function App() {
             },
           });
           if (oauthErr || !oauthData?.url) throw oauthErr ?? new Error('No OAuth URL');
-          // Open in system browser — avoids in-app WebView which blocks OAuth
-          window.open(oauthData.url, '_system');
+          await Browser.open({ url: oauthData.url, windowName: '_self' });
         } catch (error: any) {
           console.error('[BoaWallet] Native Google login failed:', error);
           showToast(
@@ -2170,17 +2173,12 @@ export default function App() {
                   : m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                <button onClick={() => setShowBitcoinLoginModal(true)} className="px-3 py-2 bg-[#252015] border border-[#5A5A40] text-[#f4e5b2] rounded-xl text-sm font-bold transition-transform active:scale-95 flex items-center gap-1.5">
-                  <Wallet size={15} /> BTC
-                </button>
-                {canUseWeb3Login && (
-                  <button onClick={() => handleLogin('web3')} className="px-3 py-2 bg-[#1a1a1a] border border-gray-700 text-white rounded-xl text-sm font-bold transition-transform active:scale-95 flex items-center gap-1.5">
-                    <Wallet size={15} /> Web3
-                  </button>
-                )}
-                <button onClick={() => handleLogin('google')} className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95">Login</button>
-              </div>
+              <button
+                onClick={() => { localStorage.removeItem('boa_welcome_skipped'); setWelcomeSkipped(false); }}
+                className="px-4 py-2 bg-[#d0d0a0] text-[#0a0a0a] rounded-xl text-sm font-bold transition-transform active:scale-95"
+              >
+                {m('Entrar', 'Sign in', 'Entrar', 'Accedi')}
+              </button>
             )}
 
             {/* Settings */}
