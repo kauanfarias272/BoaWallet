@@ -168,25 +168,43 @@ export default function App() {
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
 
+  // Tracks whether a deep link was received so browserFinished doesn't duplicate the toast
+  const oauthHandledRef = useRef(false);
+
   // Handle OAuth deep link callback (Android: io.boa.wallet://auth?code=...)
   const handleOAuthUrl = async (url: string) => {
     if (!url.startsWith('io.boa.wallet://auth')) return;
+    oauthHandledRef.current = true;
     console.log('[BoaWallet] Handling OAuth URL:', url);
-    // Close the Chrome Custom Tab immediately so the user lands back in the app
-    try { await Browser.close(); } catch { /* not open — ignore */ }
+    // Close the Chrome Custom Tab so user lands back in the app immediately
+    try { await Browser.close(); } catch { /* tab may already be gone */ }
     try {
-      // Normalize custom scheme → https so URLSearchParams parsing is reliable in all environments
+      // Normalize custom scheme → https so URL parsing is reliable in all JS environments
       const normalizedUrl = url.replace('io.boa.wallet://auth', 'https://boawallet.app/auth');
       const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
       if (error) {
-        console.error('[BoaWallet] OAuth code exchange failed:', error.message, error);
-        showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+        console.warn('[BoaWallet] Code exchange failed, checking existing session…', error.message);
+        // Fallback A: code may have already been exchanged on a prior attempt — try getSession
+        const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+        if (fallback.session) {
+          console.log('[BoaWallet] Fallback session found.');
+          showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+        } else {
+          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+        }
       } else if (data.session) {
-        console.log('[BoaWallet] OAuth session established!', data.session.user.email);
+        console.log('[BoaWallet] OAuth session established:', data.session.user.email);
         showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
       }
     } catch (e: any) {
       console.error('[BoaWallet] OAuth exchange error:', e);
+      // Fallback B: unexpected error — still check if a valid session slipped through
+      const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      if (fallback.session) {
+        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+      } else {
+        showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+      }
     }
   };
 
@@ -199,12 +217,42 @@ export default function App() {
       }
     }).catch(() => {});
 
-    // Case 2: app was in background and resumed by the deep link
-    const listener = CapApp.addListener('appUrlOpen', (event) => {
+    // Case 2: app was in background, Android delivers deep link via appUrlOpen
+    const urlListener = CapApp.addListener('appUrlOpen', (event) => {
       console.log('[BoaWallet] appUrlOpen:', event.url);
       handleOAuthUrl(event.url);
     });
-    return () => { listener.then(l => l.remove()); };
+
+    // Case 3: Custom Tab closed without triggering deep link (Android didn't intercept
+    // the custom scheme, or user closed the browser manually).
+    // Wait briefly for any in-flight appUrlOpen, then poll for session as last resort.
+    const browserDoneListener = Browser.addListener('browserFinished', async () => {
+      console.log('[BoaWallet] browserFinished — oauthHandled:', oauthHandledRef.current);
+      if (oauthHandledRef.current) {
+        oauthHandledRef.current = false; // reset for next attempt
+        return; // appUrlOpen already handled everything
+      }
+      // Give appUrlOpen up to 1 s to arrive before we conclude it was missed
+      await new Promise(r => setTimeout(r, 1000));
+      if (oauthHandledRef.current) {
+        oauthHandledRef.current = false;
+        return;
+      }
+      // appUrlOpen was NOT received — poll Supabase for a session that may have been
+      // established server-side even though we never got the redirect URL
+      const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      if (session) {
+        console.log('[BoaWallet] Session recovered via browserFinished poll.');
+        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+      }
+      // No session → user abandoned the flow or Google login failed; do nothing.
+      oauthHandledRef.current = false;
+    });
+
+    return () => {
+      urlListener.then(l => l.remove());
+      browserDoneListener.then(l => l.remove());
+    };
   }, []);
 
   const handleSecretClick = () => {
