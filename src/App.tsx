@@ -28,6 +28,8 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { clearPersistedTokens } from './lib/durableSession';
+import { addToSyncQueue, removeFromSyncQueue, getDueItems, markRetried } from './lib/syncQueue';
 import { formatCurrency } from './lib/utils';
 import { normalizeLogoUrl } from './lib/logos';
 import { sortFriendPair, FriendshipRow, FriendProfile, readFriendsCache, writeFriendsCache } from './lib/friends';
@@ -127,6 +129,7 @@ export default function App() {
   const [handleError, setHandleError] = useState('');
   const [friends, setFriends] = useState<FriendProfile[]>([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [importDuplicates, setImportDuplicates] = useState<{ duplicates: Subscription[]; newItems: Subscription[]; adjustments: Adjustment[]; selected: Set<string> } | null>(null);
 
   type SubscriptionMemberRow = {
     id: string;
@@ -181,10 +184,37 @@ export default function App() {
     try {
       // Normalize custom scheme → https so URL parsing is reliable in all JS environments
       const normalizedUrl = url.replace('io.boa.wallet://auth', 'https://boawallet.app/auth');
-      const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
-      if (error) {
-        console.warn('[BoaWallet] Code exchange failed, checking existing session…', error.message);
-        // Fallback A: code may have already been exchanged on a prior attempt — try getSession
+
+      // Retry code exchange up to 3 times (network/timing issues)
+      let exchangeSession: any = null;
+      let lastError: any = null;
+      const MAX_RETRIES = 3;
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
+          if (!error && data?.session) {
+            exchangeSession = data.session;
+            break;
+          }
+          lastError = error;
+          // Don't retry if code was already consumed
+          if (error?.message?.includes('invalid_grant') || error?.message?.includes('already')) break;
+          if (attempt < MAX_RETRIES) {
+            console.warn(`[BoaWallet] Code exchange attempt ${attempt} failed, retrying...`, error?.message);
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        } catch (e) {
+          lastError = e;
+          if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+
+      if (exchangeSession) {
+        console.log('[BoaWallet] OAuth session established:', exchangeSession.user.email);
+        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+      } else {
+        console.warn('[BoaWallet] Code exchange failed after retries, checking existing session…', lastError?.message);
         const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
         if (fallback.session) {
           console.log('[BoaWallet] Fallback session found.');
@@ -192,13 +222,9 @@ export default function App() {
         } else {
           showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
         }
-      } else if (data.session) {
-        console.log('[BoaWallet] OAuth session established:', data.session.user.email);
-        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
       }
     } catch (e: any) {
       console.error('[BoaWallet] OAuth exchange error:', e);
-      // Fallback B: unexpected error — still check if a valid session slipped through
       const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
       if (fallback.session) {
         showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
@@ -229,23 +255,25 @@ export default function App() {
     const browserDoneListener = Browser.addListener('browserFinished', async () => {
       console.log('[BoaWallet] browserFinished — oauthHandled:', oauthHandledRef.current);
       if (oauthHandledRef.current) {
-        oauthHandledRef.current = false; // reset for next attempt
-        return; // appUrlOpen already handled everything
-      }
-      // Give appUrlOpen up to 1 s to arrive before we conclude it was missed
-      await new Promise(r => setTimeout(r, 1000));
-      if (oauthHandledRef.current) {
         oauthHandledRef.current = false;
         return;
       }
-      // appUrlOpen was NOT received — poll Supabase for a session that may have been
-      // established server-side even though we never got the redirect URL
-      const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-      if (session) {
-        console.log('[BoaWallet] Session recovered via browserFinished poll.');
-        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+      // Poll up to 3 times with increasing delays for appUrlOpen or server-side session
+      const delays = [1000, 2000, 3000];
+      for (const delay of delays) {
+        await new Promise(r => setTimeout(r, delay));
+        if (oauthHandledRef.current) {
+          oauthHandledRef.current = false;
+          return;
+        }
+        const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+        if (session) {
+          console.log('[BoaWallet] Session recovered via browserFinished poll.');
+          showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+          oauthHandledRef.current = false;
+          return;
+        }
       }
-      // No session → user abandoned the flow or Google login failed; do nothing.
       oauthHandledRef.current = false;
     });
 
@@ -723,14 +751,14 @@ export default function App() {
         return;
       }
       if (isNativePlatform) {
-        // Bypass Firebase native entirely — SHA-1 mismatch in Play Store AAB causes DEVELOPER_ERROR.
-        // Use Chrome Custom Tab via @capacitor/browser — it reliably intercepts custom-scheme redirects,
-        // whereas window.open(_system) leaves the user stuck in Chrome after Google auth completes.
+        // Chrome Custom Tab can't handle 302 redirects to custom schemes (io.boa.wallet://auth).
+        // Solution: redirect to an HTTPS page (GitHub Pages) that does a JS redirect to the custom scheme.
+        // Flow: Google → Supabase callback → GitHub Pages → JS redirect → io.boa.wallet://auth → app
         try {
           const { data: oauthData, error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: 'google',
             options: {
-              redirectTo: 'io.boa.wallet://auth',
+              redirectTo: 'https://kauanfarias272.github.io/BoaWallet/auth/',
               skipBrowserRedirect: true,
             },
           });
@@ -786,6 +814,7 @@ export default function App() {
       await FirebaseAuthentication.signOut().catch(() => {});
       await firebaseSignOut(firebaseAuth).catch(() => {});
       await supabase.auth.signOut({ scope: 'global' });
+      await clearPersistedTokens();
       setGoogleAccessToken(null);
     } catch (error) {
       console.error('Logout error', error);
@@ -967,6 +996,66 @@ export default function App() {
     }
     return 'fail';
   };
+
+  // Ref to avoid stale closure in processSyncQueue
+  const subscriptionsRef = useRef(subscriptions);
+  useEffect(() => { subscriptionsRef.current = subscriptions; }, [subscriptions]);
+
+  const processSyncQueue = async () => {
+    if (!user) return;
+    const dueItems = getDueItems();
+    if (dueItems.length === 0) return;
+
+    console.log(`[BoaWallet] Processing ${dueItems.length} pending sync items`);
+
+    for (const queueItem of dueItems) {
+      const sub = subscriptionsRef.current.find(s => s.id === queueItem.subscriptionId);
+      if (!sub) {
+        removeFromSyncQueue(queueItem.subscriptionId);
+        continue;
+      }
+
+      const result = await saveToSupabase(
+        [toSupabaseRow(sub, user.id)],
+        [toMinimalSupabaseRow(sub, user.id)],
+        [toMarketplaceCompatibleSupabaseRow(sub, user.id)]
+      );
+
+      if (result !== 'fail') {
+        removeFromSyncQueue(sub.id);
+        await syncLinkedMembersForSubscription(sub, user.id);
+        setDoc(doc(db, 'subscriptions', sub.id), sanitizeForFirebase(sub) as any).catch(() => {});
+        setSubscriptions(prev => prev.map(s => s.id === sub.id ? { ...s, syncStatus: 'synced' as const } : s));
+        console.log(`[BoaWallet] Sync queue: ${sub.name} synced successfully`);
+      } else {
+        markRetried(sub.id);
+        if (queueItem.retryCount >= 4) {
+          setSubscriptions(prev => prev.map(s => s.id === sub.id ? { ...s, syncStatus: 'failed' as const } : s));
+        }
+      }
+    }
+  };
+
+  // Process sync queue on mount, every 5 minutes, and on app resume
+  useEffect(() => {
+    if (!user) return;
+
+    const mountTimeout = setTimeout(processSyncQueue, 3000);
+    const interval = setInterval(processSyncQueue, 5 * 60 * 1000);
+
+    let resumeListener: any;
+    if (isNativePlatform) {
+      resumeListener = CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) setTimeout(processSyncQueue, 1000);
+      });
+    }
+
+    return () => {
+      clearTimeout(mountTimeout);
+      clearInterval(interval);
+      resumeListener?.then?.((l: any) => l.remove());
+    };
+  }, [user]);
 
   const normalizeSubscription = (s: any): Subscription => {
     const normalizeDate = (d: any) => {
@@ -1368,14 +1457,6 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     });
 
-    const updatedSubscriptions = isNew
-      ? [...subscriptions, fullSub]
-      : subscriptions.map((item) => item.id === fullSub.id ? fullSub : item);
-
-    setSubscriptions(updatedSubscriptions);
-    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(updatedSubscriptions));
-    localStorage.setItem('subscriptions', JSON.stringify(updatedSubscriptions));
-
     const result = await saveToSupabase(
       [toSupabaseRow(fullSub, user.id)],
       [toMinimalSupabaseRow(fullSub, user.id)],
@@ -1383,14 +1464,31 @@ export default function App() {
     );
 
     if (result !== 'fail') {
+      fullSub.syncStatus = 'synced';
+      removeFromSyncQueue(fullSub.id);
       await syncLinkedMembersForSubscription(fullSub, user.id);
       setDoc(doc(db, 'subscriptions', fullSub.id), sanitizeForFirebase(fullSub) as any).catch(() => {});
       if (!options?.silentSuccess) {
         showToast(options?.successMessage || m('Item salvo!', 'Item saved!', '¡Elemento guardado!', 'Elemento salvato!'), true);
       }
     } else {
-      showToast(options?.localOnlyMessage || m('Item salvo localmente', 'Item saved locally', 'Elemento guardado localmente', 'Elemento salvato in locale'), false);
+      fullSub.syncStatus = 'pending';
+      addToSyncQueue(fullSub.id, user.id);
+      showToast(options?.localOnlyMessage || m(
+        'Item salvo localmente — sincroniza automaticamente',
+        'Item saved locally — will sync automatically',
+        'Elemento guardado localmente — se sincronizará',
+        'Elemento salvato in locale — sincronizzazione automatica'
+      ), false);
     }
+
+    // Update state with syncStatus
+    const finalSubscriptions = (isNew
+      ? [...subscriptions, fullSub]
+      : subscriptions.map((item) => item.id === fullSub.id ? fullSub : item));
+    setSubscriptions(finalSubscriptions);
+    localStorage.setItem('subscriptions_' + user.id, JSON.stringify(finalSubscriptions));
+    localStorage.setItem('subscriptions', JSON.stringify(finalSubscriptions));
 
     if (closeForm) {
       setIsFormOpen(false);
@@ -1398,7 +1496,7 @@ export default function App() {
     }
 
     // Sincroniza com o app do relógio em background
-    void syncToWatch(user, userHandle, updatedSubscriptions, baseCurrency, exchangeRates);
+    void syncToWatch(user, userHandle, finalSubscriptions, baseCurrency, exchangeRates);
 
     return fullSub;
   };
@@ -1904,12 +2002,22 @@ export default function App() {
         tableBody.push([{ content: cat.toUpperCase(), styles: { fontStyle: 'bold', textColor: olive, fillColor: [244, 244, 238], colSpan: 3 } }]);
         for (const s of catSubs) {
           const cost = getEffectiveTotalCost(s);
+          const convertedCost = convertCurrency(cost.amount, cost.currency as Currency, baseCurrency, exchangeRates);
+          const cycleLabel = (() => {
+            const cycles: Record<string, Record<string, string>> = {
+              weekly:     { pt: 'Semanal',    es: 'Semanal',    it: 'Settimanale', en: 'Weekly' },
+              biweekly:   { pt: 'Quinzenal',  es: 'Quincenal',  it: 'Bisettimanale', en: 'Biweekly' },
+              monthly:    { pt: 'Mensal',     es: 'Mensual',    it: 'Mensile',     en: 'Monthly' },
+              quarterly:  { pt: 'Trimestral', es: 'Trimestral', it: 'Trimestrale', en: 'Quarterly' },
+              semiannual: { pt: 'Semestral',  es: 'Semestral',  it: 'Semestrale',  en: 'Semiannual' },
+              annual:     { pt: 'Anual',      es: 'Anual',      it: 'Annuale',     en: 'Annual' },
+            };
+            return cycles[s.billingCycle]?.[language] ?? cycles[s.billingCycle]?.en ?? s.billingCycle ?? '—';
+          })();
           tableBody.push([
             s.name,
-            s.billingCycle === 'monthly' ? (language === 'pt' ? 'Mensal' : language === 'es' ? 'Mensual' : language === 'it' ? 'Mensile' : 'Monthly') :
-            s.billingCycle === 'annual'  ? (language === 'pt' ? 'Anual'  : language === 'es' ? 'Anual'   : language === 'it' ? 'Annuale' : 'Annual') :
-            s.billingCycle ?? '—',
-            formatCurrency(cost.amount, cost.currency),
+            cycleLabel,
+            formatCurrency(convertedCost, baseCurrency),
           ]);
         }
       }
@@ -2037,7 +2145,7 @@ export default function App() {
         const content = e.target?.result as string;
         if (!content) throw new Error('Empty file');
         const data = JSON.parse(content);
-        
+
         let subscriptionsToImport: any[] = [];
         if (Array.isArray(data)) {
           subscriptionsToImport = data;
@@ -2049,7 +2157,6 @@ export default function App() {
         const adjustmentsToImport = Array.isArray(data?.adjustments) ? data.adjustments : [];
 
         const normalized = subscriptionsToImport.map(s => normalizeSubscription(s));
-        const n = normalized.length;
         const normalizedAdjustments = adjustmentsToImport.map((adjustment: any) => ({
           id: String(adjustment.id || Date.now() + Math.random()),
           description: adjustment.description || '',
@@ -2060,43 +2167,28 @@ export default function App() {
           year: Number(adjustment.year) || new Date().getFullYear(),
         }));
 
-        // 1. Always save locally FIRST
-        setSubscriptions(normalized);
-        setAdjustments(normalizedAdjustments);
-        localStorage.setItem('subscriptions', JSON.stringify(normalized));
-        localStorage.setItem('boa_adjustments', JSON.stringify(normalizedAdjustments));
-
-        if (user) {
-          // Tag every item with this user's id
-          const withUser = normalized.map(s => normalizeSubscription({ ...s, user_id: user.id, userId: user.id }));
-          localStorage.setItem('subscriptions_' + user.id, JSON.stringify(withUser));
-          localStorage.setItem('adjustments_' + user.id, JSON.stringify(normalizedAdjustments));
-
-          console.log('[BoaWallet] Pushing imported data to Cloud...');
-          const result = await saveToSupabase(
-            withUser.map(s => toSupabaseRow(s, user.id)),
-            withUser.map(s => toMinimalSupabaseRow(s, user.id)),
-            withUser.map(s => toMarketplaceCompatibleSupabaseRow(s, user.id))
+        // Detect duplicates by matching name + costAmount + costCurrency
+        const duplicates: Subscription[] = [];
+        const newItems: Subscription[] = [];
+        for (const item of normalized) {
+          const isDuplicate = subscriptions.some(existing =>
+            existing.name.toLowerCase() === item.name.toLowerCase() &&
+            existing.costAmount === item.costAmount &&
+            existing.costCurrency === item.costCurrency
           );
-          if (normalizedAdjustments.length > 0) {
-            await supabase.from('adjustments').upsert(
-              normalizedAdjustments.map((adjustment) => ({
-                ...adjustment,
-                user_id: user.id,
-              }))
-            );
-          }
-
-          if (result === 'ok' || result === 'partial') {
-            showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
+          if (isDuplicate) {
+            duplicates.push(item);
           } else {
-            showToast(m(`${n} itens salvos localmente`, `${n} items saved locally`, `${n} elementos guardados localmente`, `${n} elementi salvati in locale`), false);
+            newItems.push(item);
           }
+        }
 
-          // Firebase secondary — silent
-          withUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), sanitizeForFirebase(item) as any).catch(() => {}));
+        if (duplicates.length > 0) {
+          // Show duplicate resolution modal — user picks which duplicates to include
+          setImportDuplicates({ duplicates, newItems, adjustments: normalizedAdjustments, selected: new Set() });
         } else {
-          showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
+          // No duplicates — import everything directly
+          await finalizeImport(normalized, normalizedAdjustments);
         }
       } catch (err: any) {
         console.error('Import error:', err);
@@ -2105,6 +2197,61 @@ export default function App() {
     };
     reader.readAsText(file);
     event.target.value = '';
+  };
+
+  const finalizeImport = async (itemsToImport: Subscription[], adjustmentsToImport: Adjustment[]) => {
+    const n = itemsToImport.length;
+    if (n === 0 && adjustmentsToImport.length === 0) {
+      showToast(m('Nenhum item novo para importar', 'No new items to import', 'No hay elementos nuevos', 'Nessun nuovo elemento'), false);
+      return;
+    }
+
+    // Merge with existing subscriptions (keep existing, add new)
+    const existingIds = new Set(subscriptions.map(s => s.id));
+    const mergedSubs = [...subscriptions, ...itemsToImport.filter(s => !existingIds.has(s.id))];
+    // For items with same id, update them
+    const finalSubs = mergedSubs.map(s => {
+      const imported = itemsToImport.find(i => i.id === s.id);
+      return imported || s;
+    });
+
+    setSubscriptions(finalSubs);
+    setAdjustments(prev => {
+      const existingAdjIds = new Set(prev.map(a => a.id));
+      return [...prev, ...adjustmentsToImport.filter(a => !existingAdjIds.has(a.id))];
+    });
+    localStorage.setItem('subscriptions', JSON.stringify(finalSubs));
+    localStorage.setItem('boa_adjustments', JSON.stringify([...adjustments, ...adjustmentsToImport]));
+
+    if (user) {
+      const withUser = finalSubs.map(s => normalizeSubscription({ ...s, user_id: user.id, userId: user.id }));
+      localStorage.setItem('subscriptions_' + user.id, JSON.stringify(withUser));
+      localStorage.setItem('adjustments_' + user.id, JSON.stringify([...adjustments, ...adjustmentsToImport]));
+
+      console.log('[BoaWallet] Pushing imported data to Cloud...');
+      // Only push newly imported items to avoid overwriting
+      const importedWithUser = itemsToImport.map(s => normalizeSubscription({ ...s, user_id: user.id, userId: user.id }));
+      const result = await saveToSupabase(
+        importedWithUser.map(s => toSupabaseRow(s, user.id)),
+        importedWithUser.map(s => toMinimalSupabaseRow(s, user.id)),
+        importedWithUser.map(s => toMarketplaceCompatibleSupabaseRow(s, user.id))
+      );
+      if (adjustmentsToImport.length > 0) {
+        await supabase.from('adjustments').upsert(
+          adjustmentsToImport.map((adjustment) => ({ ...adjustment, user_id: user.id }))
+        );
+      }
+
+      if (result === 'ok' || result === 'partial') {
+        showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
+      } else {
+        showToast(m(`${n} itens salvos localmente`, `${n} items saved locally`, `${n} elementos guardados localmente`, `${n} elementi salvati in locale`), false);
+      }
+
+      importedWithUser.forEach(item => setDoc(doc(db, 'subscriptions', item.id), sanitizeForFirebase(item) as any).catch(() => {}));
+    } else {
+      showToast(m(`${n} itens importados!`, `${n} items imported!`, `${n} elementos importados!`, `${n} elementi importati!`), true);
+    }
   };
 
   const ownedActiveSubs = subscriptions.filter(s => !s.status?.startsWith('cancelled'));
@@ -2427,6 +2574,60 @@ export default function App() {
         />
       )}
       
+      {importDuplicates && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-6 max-w-md w-full max-h-[80vh] overflow-y-auto">
+            <h3 className="text-lg font-bold mb-2">{m('Itens duplicados encontrados', 'Duplicate items found', 'Elementos duplicados encontrados', 'Elementi duplicati trovati')}</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              {m(
+                `${importDuplicates.newItems.length} novo(s) + ${importDuplicates.duplicates.length} duplicado(s). Marque os duplicados que deseja incluir:`,
+                `${importDuplicates.newItems.length} new + ${importDuplicates.duplicates.length} duplicate(s). Check duplicates to include:`,
+                `${importDuplicates.newItems.length} nuevo(s) + ${importDuplicates.duplicates.length} duplicado(s). Marque los duplicados a incluir:`,
+                `${importDuplicates.newItems.length} nuovo/i + ${importDuplicates.duplicates.length} duplicato/i. Seleziona i duplicati da includere:`
+              )}
+            </p>
+            <div className="space-y-2 mb-5">
+              {importDuplicates.duplicates.map(dup => (
+                <label key={dup.id} className="flex items-center gap-3 p-3 bg-[#111] rounded-xl cursor-pointer hover:bg-[#1a1a1a] border border-gray-800">
+                  <input
+                    type="checkbox"
+                    checked={importDuplicates.selected.has(dup.id)}
+                    onChange={() => {
+                      setImportDuplicates(prev => {
+                        if (!prev) return prev;
+                        const next = new Set(prev.selected);
+                        if (next.has(dup.id)) next.delete(dup.id); else next.add(dup.id);
+                        return { ...prev, selected: next };
+                      });
+                    }}
+                    className="w-5 h-5 rounded accent-[#d0d0a0]"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{dup.emoji} {dup.name}</div>
+                    <div className="text-xs text-gray-500">{formatCurrency(dup.costAmount, dup.costCurrency)} / {dup.billingCycle}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setImportDuplicates(null)}
+                className="flex-1 py-3 rounded-xl bg-gray-800 font-bold hover:bg-gray-700 text-sm"
+              >{m('Cancelar', 'Cancel', 'Cancelar', 'Annulla')}</button>
+              <button
+                onClick={async () => {
+                  const selectedDups = importDuplicates.duplicates.filter(d => importDuplicates.selected.has(d.id));
+                  const allToImport = [...importDuplicates.newItems, ...selectedDups];
+                  setImportDuplicates(null);
+                  await finalizeImport(allToImport, importDuplicates.adjustments);
+                }}
+                className="flex-1 py-3 rounded-xl bg-[#d0d0a0] text-[#0a0a0a] font-bold hover:bg-[#c0c090] text-sm"
+              >{m('Importar', 'Import', 'Importar', 'Importa')} ({importDuplicates.newItems.length + importDuplicates.selected.size})</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {subToDelete && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#1a1a1a] border border-gray-700 rounded-3xl p-8 max-w-sm w-full text-center">

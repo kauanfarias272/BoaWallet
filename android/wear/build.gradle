@@ -8,8 +8,8 @@ android {
         applicationId "io.boa.wallet"
         minSdkVersion 26
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 48
-        versionName "1.9.7"
+        versionCode 50
+        versionName "1.9.9"
     }
 
     signingConfigs {
