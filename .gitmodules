@@ -1,0 +1,6 @@
+[submodule "manoscripto"]
+  path = manoscripto
+  url = https://github.com/kauanfarias272/manoscripto.git
+[submodule ".claude/worktrees/blissful-ramanujan"]
+  path = .claude/worktrees/blissful-ramanujan
+  url = https://github.com/kauanfarias272/BoaWallet.git
