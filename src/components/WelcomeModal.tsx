@@ -7,14 +7,13 @@ interface WelcomeModalProps {
   onSave: (name: string) => void;
   onLogin: () => void;
   onWeb3Login?: () => void;
-  onBitcoinLogin?: () => void;
   canUseWeb3Login?: boolean;
   loggingIn?: boolean;
-  loginMethod?: 'google' | 'web3' | 'bitcoin' | null;
+  loginMethod?: 'google' | 'web3' | null;
   onSkip?: () => void;
 }
 
-export function WelcomeModal({ onSave, onLogin, onWeb3Login, onBitcoinLogin, canUseWeb3Login = false, loggingIn = false, loginMethod = null, onSkip }: WelcomeModalProps) {
+export function WelcomeModal({ onSave, onLogin, onWeb3Login, canUseWeb3Login = false, loggingIn = false, loginMethod = null, onSkip }: WelcomeModalProps) {
   const [name, setName] = useState('');
   const [gender, setGender] = useState<Gender>('N');
   const { language, setGender: setContextGender } = useAppContext();
@@ -78,20 +77,6 @@ export function WelcomeModal({ onSave, onLogin, onWeb3Login, onBitcoinLogin, can
               {loggingIn && loginMethod === 'web3'
                 ? (language === 'pt' ? 'Conectando carteira...' : language === 'es' ? 'Conectando wallet...' : language === 'it' ? 'Connessione wallet...' : 'Connecting wallet...')
                 : 'Entrar com Web3'}
-            </button>
-          )}
-
-          {onBitcoinLogin && (
-            <button
-              type="button"
-              onClick={onBitcoinLogin}
-              disabled={loggingIn}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-[#252015] hover:bg-[#30281c] text-[#f4e5b2] rounded-xl transition-colors font-medium border border-[#5A5A40] disabled:opacity-60"
-            >
-              <Wallet size={18} />
-              {loggingIn && loginMethod === 'bitcoin'
-                ? (language === 'pt' ? 'Validando carteira...' : language === 'es' ? 'Validando cartera...' : language === 'it' ? 'Validazione wallet...' : 'Validating wallet...')
-                : (language === 'pt' ? 'Entrar com Bitcoin' : language === 'es' ? 'Entrar con Bitcoin' : language === 'it' ? 'Accedi con Bitcoin' : 'Sign in with Bitcoin')}
             </button>
           )}
         </div>

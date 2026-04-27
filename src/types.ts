@@ -120,6 +120,7 @@ export interface Subscription {
   paymentHistory?: Record<string, 'paid' | 'skipped' | 'auto-paid'>;
   autoRenewDate?: number; // Day of month to auto-reactivate (for temp pauses)
   reminderDisabled?: boolean; // Disable 10-day reminders for temp pauses
+  syncStatus?: 'synced' | 'pending' | 'failed'; // Client-side only — not stored in Supabase
 }
 
 // Default fallback rates

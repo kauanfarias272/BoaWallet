@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls *.apk *.aab)",
+      "Bash(rm -f BoaWallet-1.aab BoaWallet-1.apk BoaWallet-v1.3.0.aab BoaWallet-v1.3.0.apk BoaWallet.aab BoaWallet.apk BoaWallet_RELEASE_HOJE.aab BoaWallet_RELEASE_HOJE.apk BoaWallet_v1.5.0.aab BoaWallet_v1.5.0.apk BoaWallet_v1.6.0.aab BoaWallet_v1.6.0.apk BoaWallet_v1.6.1.aab BoaWallet_v1.6.1.apk BoaWallet_v1.6.2.aab BoaWallet_v1.6.2.apk BoaWallet_v1.6.3.aab BoaWallet_v1.6.3.apk boatesteverssion.aab boawallet_v1.1.4.aab boawallet_v1.1.4.apk boawallet_versao_1_1_2.aab boawalletaqui.aab boawalletnova.apk)",
+      "Bash(npm run:*)",
+      "Bash(npx cap:*)",
+      "Bash(./gradlew assembleRelease)",
+      "Bash(./gradlew assembleRelease bundleRelease)",
+      "Bash(cp android/app/build/outputs/apk/release/app-release.apk BoaWallet_v1.7.1.apk)",
+      "Bash(cp android/app/build/outputs/bundle/release/app-release.aab BoaWallet_v1.7.1.aab)",
+      "Bash(rm -f BoaWallet_v1.7.0.apk)",
+      "Bash(ls -lh BoaWallet_v1.7.1.*)",
+      "Bash(npm install:*)",
+      "Bash(cp android/app/build/outputs/apk/release/app-release.apk BoaWallet_v1.7.2.apk)",
+      "Bash(cp android/app/build/outputs/bundle/release/app-release.aab BoaWallet_v1.7.2.aab)",
+      "Bash(rm -f BoaWallet_v1.7.1.apk BoaWallet_v1.7.1.aab)",
+      "Bash(ls -lh BoaWallet_v1.7.2.*)",
+      "Bash(cp android/app/build/outputs/apk/release/app-release.apk BoaWallet_v1.7.3.apk)",
+      "Bash(cp android/app/build/outputs/bundle/release/app-release.aab BoaWallet_v1.7.3.aab)",
+      "Bash(rm -f BoaWallet_v1.7.2.apk BoaWallet_v1.7.2.aab)",
+      "Bash(ls -lh BoaWallet_v1.7.3.*)",
+      "Bash(cp android/app/build/outputs/apk/release/app-release.apk BoaWallet_v1.7.4.apk)",
+      "Bash(cp android/app/build/outputs/bundle/release/app-release.aab BoaWallet_v1.7.4.aab)",
+      "Bash(rm -f BoaWallet_v1.7.3.apk BoaWallet_v1.7.3.aab)",
+      "Bash(ls -lh BoaWallet_v1.7.4.*)"
+    ]
+  }
+}

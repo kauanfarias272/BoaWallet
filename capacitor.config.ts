@@ -6,13 +6,20 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   plugins: {
     FirebaseAuthentication: {
-      skipNativeAuth: false,
+      skipNativeAuth: true,
       providers: ['google.com'],
     },
   },
   server: {
     // Allow the WebView to open external URLs for OAuth
     androidScheme: 'https',
+  },
+  android: {
+    // Prevent horizontal scrolling / content wider than viewport
+    overScrollMode: 'never' as any,
+    // Ensure WebView fits within the screen bounds
+    initialFocus: false as any,
+    backgroundColor: '#0a0a0a',
   },
 };
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Bluetooth, Globe, Lock, RefreshCw, Search, Smartphone, UserPlus, Users, X, Zap } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { FriendProfile } from '../lib/friends';
@@ -361,7 +361,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     return () => { listenerPromise.then((l) => l.remove()); };
   }, [nearbyTab, nfcTab]);
 
-  // ── NFC lifecycle ─────────────────────────────────────────────────────────
+  // â”€â”€ NFC lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     return;
 
@@ -371,7 +371,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
 
     startNfcScan(
       (profile) => {
-        if (profile.userId === currentUserId) return; // ignora o próprio usuário
+        if (profile.userId === currentUserId) return; // ignora o prÃ³prio usuÃ¡rio
         setNfcUsers((prev: BoaPeerProfile[]) => {
           if (prev.some((u: BoaPeerProfile) => u.userId === profile.userId)) return prev;
           return [profile, ...prev];
@@ -419,7 +419,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
           ));
         } else if (isDisabled) {
           setNfcError(tx(
-            'NFC desabilitado ou não suportado neste dispositivo.',
+            'NFC desabilitado ou nÃ£o suportado neste dispositivo.',
             'NFC disabled or not supported on this device.',
             'NFC deshabilitado o no compatible.',
             'NFC disabilitato o non supportato.'
@@ -455,7 +455,7 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
       setAddingNfcId(null);
     }
   };
-  // ─────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   const selectedFriend = useMemo(
     () => friends.find((friend) => friend.id === selectedFriendId) || friends[0] || null,
@@ -624,12 +624,12 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
           </div>
         </div>
 
-        {/* ── NFC Tab ──────────────────────────────────────────────────── */}
+        {/* â”€â”€ NFC Tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         {nearbyTab && nearbySupported && (
           <div className="border-b border-gray-800 bg-[radial-gradient(circle_at_top,rgba(96,165,250,0.16),transparent_38%),linear-gradient(160deg,#10141c_0%,#0d1118_55%,#0b0d12_100%)] px-6 py-5">
             <div className="flex items-center justify-between mb-4">
               <p className="text-[10px] uppercase tracking-[0.28em] text-sky-200/70 font-semibold">
-                {tx('Bluetooth — pessoas por perto', 'Bluetooth — nearby people', 'Bluetooth — personas cercanas', 'Bluetooth — persone vicine')}
+                {tx('Bluetooth â€” pessoas por perto', 'Bluetooth â€” nearby people', 'Bluetooth â€” personas cercanas', 'Bluetooth â€” persone vicine')}
               </p>
               <button
                 onClick={handleToggleNearbyTab}
@@ -1191,3 +1191,4 @@ export function FriendsModal({ currentUserId, currentUsername, currentName, frie
     </div>
   );
 }
+

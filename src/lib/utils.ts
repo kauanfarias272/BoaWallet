@@ -7,11 +7,12 @@ export function cn(...inputs: ClassValue[]) {
 
 export function formatCurrency(amount: number, currency: string) {
   const safeAmount = Number(amount) || 0;
+  const locale = currency === 'BRL' ? 'pt-BR' : currency === 'EUR' ? 'de-DE' : currency === 'GBP' ? 'en-GB' : currency === 'JPY' ? 'ja-JP' : 'en-US';
   if (currency === 'BTC' || currency === 'SATS') {
-    return `${currency === 'BTC' ? '₿' : 'SATS'} ${safeAmount.toLocaleString('en-US', { minimumFractionDigits: currency === 'BTC' ? 8 : 0, maximumFractionDigits: currency === 'BTC' ? 8 : 0 })}`;
+    return `${currency === 'BTC' ? '₿' : 'SATS'} ${safeAmount.toLocaleString(locale, { minimumFractionDigits: currency === 'BTC' ? 8 : 0, maximumFractionDigits: currency === 'BTC' ? 8 : 0 })}`;
   }
   try {
-    return new Intl.NumberFormat('en-US', {
+    return new Intl.NumberFormat(locale, {
       style: 'currency',
       currency: currency,
     }).format(safeAmount);

@@ -9,9 +9,9 @@ import { ClientsTab } from './components/ClientsTab';
 import { ShareModal } from './components/ShareModal';
 import { SharedWithMeTab } from './components/SharedWithMeTab';
 import { FriendsModal } from './components/FriendsModal';
-import { LightningWallet } from './components/LightningWallet';
+// LightningWallet removed — Bitcoin wallet login was removed from the app
 import { PublicMarketplaceModal } from './components/PublicMarketplaceModal';
-import { BitcoinWalletLoginModal } from './components/BitcoinWalletLoginModal';
+
 import { Currency, Subscription, Adjustment, getEffectiveTotalCost, convertCurrency, SharedMember, BillingCycle } from './types';
 import { Plus, AlertTriangle, LogOut, Download, Upload, FileText, DollarSign, Database, Settings, Users, Globe } from 'lucide-react';
 import { useAppContext } from './AppContext';
@@ -39,12 +39,6 @@ import { hydrateUserSearchCache, prefetchBoaUsers } from './lib/userSearch';
 import { withTimeout } from './lib/requestTimeout';
 import { embedCredentialsInNotes, stripCredentialsFromNotes } from './lib/serviceCredentials';
 import { syncToWatch } from './lib/wearSync';
-import {
-  BitcoinWalletLoginConfig,
-  deriveBitcoinWalletCredentials,
-  persistBitcoinWalletLoginConfig,
-  validateBitcoinWalletLoginConfig,
-} from './lib/bitcoinWalletAuth';
 
 /** Firebase rejects objects with `undefined` values — strip them before setDoc */
 function sanitizeForFirebase(obj: unknown): unknown {
@@ -67,6 +61,32 @@ const LANG_OPTIONS = [
 ];
 
 const CURRENCIES: Currency[] = ['BRL','USD','EUR','GBP','JPY','TRY','ARS','INR','IDR','CAD','AUD','CHF','CNY','MXN','BTC','SATS'];
+const NATIVE_OAUTH_CALLBACK = 'io.boa.wallet://auth';
+const PUBLIC_OAUTH_CALLBACK = 'https://kauanfarias272.github.io/BoaWallet/auth/';
+const OAUTH_CALLBACK_PREFIXES = [
+  NATIVE_OAUTH_CALLBACK,
+  `${NATIVE_OAUTH_CALLBACK}/`,
+  PUBLIC_OAUTH_CALLBACK,
+  PUBLIC_OAUTH_CALLBACK.replace(/\/$/, ''),
+  'https://boawallet.app/auth/',
+  'https://boawallet.app/auth',
+  // Also match Supabase's own callback URL which may contain the code after PKCE exchange
+  'https://xrnfgdyqkqqpxjwpmkta.supabase.co/auth/v1/callback',
+];
+
+function isOAuthCallbackUrl(url: string) {
+  const normalized = url.trim().toLowerCase();
+  return OAUTH_CALLBACK_PREFIXES.some((prefix) => normalized.startsWith(prefix.toLowerCase()));
+}
+
+function normalizeOAuthCallbackUrl(url: string) {
+  const trimmed = url.trim();
+  if (trimmed.toLowerCase().startsWith(NATIVE_OAUTH_CALLBACK.toLowerCase())) {
+    return trimmed.replace(/^io\.boa\.wallet:\/\/auth\/?/i, PUBLIC_OAUTH_CALLBACK);
+  }
+
+  return trimmed;
+}
 
 function UserAvatar({ user, onClick }: { user: import('@supabase/supabase-js').User; onClick: () => void }) {
   const [imgError, setImgError] = React.useState(false);
@@ -94,7 +114,7 @@ export default function App() {
   const { language, setLanguage, theme, setTheme, exchangeRates, userName, setUserName, gender, setGender, user, authLoading, setGoogleAccessToken, userHandle, saveUserHandle } = useAppContext();
   const t = useTranslation(language);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar' | 'clients' | 'shared' | 'wallet'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'cashflow' | 'calendar' | 'clients' | 'shared'>('overview');
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [receivedSubscriptions, setReceivedSubscriptions] = useState<Subscription[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
@@ -117,8 +137,8 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
-  const [loginMethod, setLoginMethod] = useState<'google' | 'web3' | 'bitcoin' | null>(null);
-  const [showBitcoinLoginModal, setShowBitcoinLoginModal] = useState(false);
+  const [loginMethod, setLoginMethod] = useState<'google' | 'web3' | null>(null);
+  // Bitcoin login has been removed — the feature required too much manual config for users
   const [welcomeSkipped, setWelcomeSkipped] = useState(() => localStorage.getItem('boa_welcome_skipped') === '1');
   const [syncLoading, setSyncLoading] = useState(false);
   const [shareSub, setShareSub] = useState<Subscription | null>(null);
@@ -165,6 +185,15 @@ export default function App() {
   const m = (pt: string, en: string, es: string, it: string) =>
     ({ pt, en, es, it }[language as 'pt'|'en'|'es'|'it'] ?? en);
 
+  const tabMeta = [
+    { id: 'overview', label: m('Visao geral', 'Overview', 'Resumen', 'Panoramica'), accent: false },
+    { id: 'cashflow', label: m('Fluxo', 'Cashflow', 'Flujo', 'Flusso'), accent: false },
+    { id: 'calendar', label: m('Calendario', 'Calendar', 'Calendario', 'Calendario'), accent: false },
+    { id: 'clients', label: m('Clientes', 'Clients', 'Clientes', 'Clienti'), accent: false },
+    { id: 'shared', label: m('Compartilhado', 'Shared', 'Compartido', 'Condiviso'), accent: false },
+    { id: 'history', label: m('Historico', 'History', 'Historial', 'Storico'), accent: false },
+  ] as const;
+
   const isNativePlatform = Capacitor.getPlatform() !== 'web';
   const canUseWeb3Login = !isNativePlatform && typeof window !== 'undefined' && !!((window as any).ethereum || (window as any).solana);
 
@@ -174,21 +203,63 @@ export default function App() {
   // Tracks whether a deep link was received so browserFinished doesn't duplicate the toast
   const oauthHandledRef = useRef(false);
 
-  // Handle OAuth deep link callback (Android: io.boa.wallet://auth?code=...)
+  const showLoginSuccessToast = () =>
+    showToast(m('Login realizado!', 'Logged in!', 'Sesion iniciada!', 'Accesso effettuato!'), true);
+
+  const showLoginFailureToast = () =>
+    showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesiÃ³n. IntÃ©ntalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+
+  const getSessionSafely = async () => {
+    const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    return session;
+  };
+
+  const closeOauthBrowser = async () => {
+    try {
+      await Browser.close();
+    } catch {
+      // browser may already be gone
+    }
+  };
+
+  // Handle OAuth callback from the native deep link or hosted bridge page
   const handleOAuthUrl = async (url: string) => {
-    if (!url.startsWith('io.boa.wallet://auth')) return;
+    if (!isOAuthCallbackUrl(url)) return false;
     oauthHandledRef.current = true;
-    console.log('[BoaWallet] Handling OAuth URL:', url);
-    // Close the Chrome Custom Tab so user lands back in the app immediately
-    try { await Browser.close(); } catch { /* tab may already be gone */ }
+    console.log('[BoaWallet] Handling OAuth callback:', url);
+    await closeOauthBrowser();
     try {
       // Normalize custom scheme → https so URL parsing is reliable in all JS environments
-      const normalizedUrl = url.replace('io.boa.wallet://auth', 'https://boawallet.app/auth');
+      const normalizedUrl = normalizeOAuthCallbackUrl(url);
+      const hasError = /(?:\?|&|#)error=/.test(normalizedUrl);
+      const hasCode = /(?:\?|&|#)code=/.test(normalizedUrl);
 
-      // Retry code exchange up to 3 times (network/timing issues)
+      if (hasError) {
+        console.warn('[BoaWallet] OAuth callback contains an error:', normalizedUrl);
+        const fallbackSession = await getSessionSafely();
+        if (fallbackSession) {
+          showLoginSuccessToast();
+        } else {
+          showLoginFailureToast();
+        }
+        return true;
+      }
+
+      if (!hasCode) {
+        const existingSession = await getSessionSafely();
+        if (existingSession) {
+          console.log('[BoaWallet] Existing session found without code exchange.');
+          showLoginSuccessToast();
+        } else {
+          console.warn('[BoaWallet] OAuth callback arrived without code and without session.');
+        }
+        return true;
+      }
+
+      // Retry code exchange a few times for network/timing issues
       let exchangeSession: any = null;
       let lastError: any = null;
-      const MAX_RETRIES = 3;
+      const MAX_RETRIES = 4;
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -202,34 +273,34 @@ export default function App() {
           if (error?.message?.includes('invalid_grant') || error?.message?.includes('already')) break;
           if (attempt < MAX_RETRIES) {
             console.warn(`[BoaWallet] Code exchange attempt ${attempt} failed, retrying...`, error?.message);
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 1000 * attempt));
           }
         } catch (e) {
           lastError = e;
-          if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 1000));
+          if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 1000 * attempt));
         }
       }
 
       if (exchangeSession) {
         console.log('[BoaWallet] OAuth session established:', exchangeSession.user.email);
-        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+        showLoginSuccessToast();
       } else {
-        console.warn('[BoaWallet] Code exchange failed after retries, checking existing session…', lastError?.message);
-        const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-        if (fallback.session) {
+        console.warn('[BoaWallet] Code exchange failed after retries, checking existing session...', lastError?.message || lastError);
+        const fallbackSession = await getSessionSafely();
+        if (fallbackSession) {
           console.log('[BoaWallet] Fallback session found.');
-          showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+          showLoginSuccessToast();
         } else {
-          showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+          showLoginFailureToast();
         }
       }
     } catch (e: any) {
       console.error('[BoaWallet] OAuth exchange error:', e);
-      const { data: fallback } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-      if (fallback.session) {
-        showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+      const fallbackSession = await getSessionSafely();
+      if (fallbackSession) {
+        showLoginSuccessToast();
       } else {
-        showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesión. Inténtalo de nuevo.', 'Errore di accesso. Riprova.'), false);
+        showLoginFailureToast();
       }
     }
   };
@@ -237,16 +308,17 @@ export default function App() {
   useEffect(() => {
     // Case 1: app was KILLED and relaunched by the deep link — getLaunchUrl catches it
     CapApp.getLaunchUrl().then((result) => {
-      if (result?.url) {
+      if (result?.url && isOAuthCallbackUrl(result.url)) {
         console.log('[BoaWallet] getLaunchUrl:', result.url);
-        handleOAuthUrl(result.url);
+        void handleOAuthUrl(result.url);
       }
     }).catch(() => {});
 
     // Case 2: app was in background, Android delivers deep link via appUrlOpen
     const urlListener = CapApp.addListener('appUrlOpen', (event) => {
+      if (!isOAuthCallbackUrl(event.url)) return;
       console.log('[BoaWallet] appUrlOpen:', event.url);
-      handleOAuthUrl(event.url);
+      void handleOAuthUrl(event.url);
     });
 
     // Case 3: Custom Tab closed without triggering deep link (Android didn't intercept
@@ -266,10 +338,17 @@ export default function App() {
           oauthHandledRef.current = false;
           return;
         }
-        const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+        const launch = await CapApp.getLaunchUrl().catch(() => null);
+        if (launch?.url && isOAuthCallbackUrl(launch.url)) {
+          await handleOAuthUrl(launch.url);
+          oauthHandledRef.current = false;
+          return;
+        }
+
+        const session = await getSessionSafely();
         if (session) {
           console.log('[BoaWallet] Session recovered via browserFinished poll.');
-          showToast(m('Login realizado!', 'Logged in!', '¡Sesión iniciada!', 'Accesso effettuato!'), true);
+          showLoginSuccessToast();
           oauthHandledRef.current = false;
           return;
         }
@@ -636,95 +715,6 @@ export default function App() {
   }, [user, userHandle]);
 
   // --- Auth ---
-  const handleBitcoinWalletLogin = async (config: BitcoinWalletLoginConfig) => {
-    setLoggingIn(true);
-    setLoginMethod('bitcoin');
-
-    try {
-      const wallet = await validateBitcoinWalletLoginConfig(config);
-      persistBitcoinWalletLoginConfig(wallet.normalizedConfig);
-
-      const { email, password, fingerprint } = await deriveBitcoinWalletCredentials(wallet.normalizedConfig);
-      let signInResult = await supabase.auth.signInWithPassword({ email, password });
-
-      if (signInResult.error || !signInResult.data.session) {
-        const signUpResult = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: wallet.walletName || 'Bitcoin Wallet',
-              login_provider: 'bitcoin_wallet',
-              wallet_fingerprint: fingerprint.slice(0, 16),
-            },
-          },
-        });
-
-        const signUpMessage = String(signUpResult.error?.message || '').toLowerCase();
-        const alreadyRegistered = signUpMessage.includes('already registered');
-
-        if (signUpResult.error && !alreadyRegistered) {
-          throw signUpResult.error;
-        }
-
-        signInResult = await supabase.auth.signInWithPassword({ email, password });
-
-        if (signInResult.error || !signInResult.data.session) {
-          const needsConfirmation = !!signUpResult.data.user && !signUpResult.data.session;
-          if (needsConfirmation) {
-            throw new Error(
-              m(
-                'A carteira foi validada, mas o Supabase ainda exige confirmacao de email para esse tipo de conta.',
-                'The wallet was validated, but Supabase still requires email confirmation for this account type.',
-                'La cartera fue validada, pero Supabase aun exige confirmacion de email para este tipo de cuenta.',
-                'Il wallet e stato validato, ma Supabase richiede ancora la conferma email per questo tipo di account.'
-              )
-            );
-          }
-
-          throw signInResult.error || new Error(
-            m(
-              'Nao foi possivel finalizar o login com a carteira Bitcoin.',
-              'Could not finish the Bitcoin wallet login.',
-              'No se pudo completar el login con la cartera Bitcoin.',
-              'Non e stato possibile completare l accesso con il wallet Bitcoin.'
-            )
-          );
-        }
-      }
-
-      if (!userName && wallet.walletName) {
-        setUserName(wallet.walletName);
-      }
-
-      setShowBitcoinLoginModal(false);
-      showToast(
-        m(
-          `Carteira ${wallet.walletName} conectada!`,
-          `${wallet.walletName} wallet connected!`,
-          `Cartera ${wallet.walletName} conectada!`,
-          `Wallet ${wallet.walletName} collegato!`
-        ),
-        true
-      );
-    } catch (error: any) {
-      console.error('[BoaWallet] Bitcoin wallet login failed:', error);
-      showToast(
-        error?.message ||
-          m(
-            'Erro ao fazer login com carteira Bitcoin.',
-            'Bitcoin wallet login failed.',
-            'Error al iniciar sesion con cartera Bitcoin.',
-            'Accesso con wallet Bitcoin non riuscito.'
-          ),
-        false
-      );
-    } finally {
-      setLoggingIn(false);
-      setLoginMethod(null);
-    }
-  };
-
   const handleLogin = async (method: 'google' | 'web3' = 'google') => {
     setLoggingIn(true);
     setLoginMethod(method);
@@ -751,19 +741,23 @@ export default function App() {
         return;
       }
       if (isNativePlatform) {
-        // Chrome Custom Tab can't handle 302 redirects to custom schemes (io.boa.wallet://auth).
-        // Solution: redirect to an HTTPS page (GitHub Pages) that does a JS redirect to the custom scheme.
-        // Flow: Google → Supabase callback → GitHub Pages → JS redirect → io.boa.wallet://auth → app
+        oauthHandledRef.current = false;
+        // Native OAuth flow — dual-path redirect strategy:
+        // 1. Supabase redirects to the HTTPS bridge page (kauanfarias272.github.io/BoaWallet/auth/)
+        // 2. Android App Links intercept the HTTPS URL BEFORE the page loads → app receives the code
+        // 3. If App Links fail, the bridge page does a JS redirect to io.boa.wallet://auth → custom scheme intent filter
+        // 4. If both fail, browserFinished polling recovers the session
         try {
           const { data: oauthData, error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: 'google',
             options: {
-              redirectTo: 'https://kauanfarias272.github.io/BoaWallet/auth/',
+              redirectTo: PUBLIC_OAUTH_CALLBACK,
               skipBrowserRedirect: true,
             },
           });
           if (oauthErr || !oauthData?.url) throw oauthErr ?? new Error('No OAuth URL');
-          await Browser.open({ url: oauthData.url, windowName: '_self' });
+          console.log('[BoaWallet] Opening OAuth URL:', oauthData.url);
+          await Browser.open({ url: oauthData.url, presentationStyle: 'popover' });
         } catch (error: any) {
           console.error('[BoaWallet] Native Google login failed:', error);
           showToast(
@@ -811,8 +805,8 @@ export default function App() {
     void syncToWatch(null, '', [], baseCurrency, exchangeRates);
     // Encerra sessões no servidor (local scope = sem chamada de rede)
     try {
-      await FirebaseAuthentication.signOut().catch(() => {});
       await firebaseSignOut(firebaseAuth).catch(() => {});
+      await FirebaseAuthentication.signOut().catch(() => {});
       await supabase.auth.signOut({ scope: 'global' });
       await clearPersistedTokens();
       setGoogleAccessToken(null);
@@ -2361,9 +2355,7 @@ export default function App() {
             ) : loggingIn ? (
               <div className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] border border-gray-700 rounded-xl text-sm text-gray-300">
                 <div className="w-4 h-4 rounded-full border-2 border-gray-500 border-t-[#d0d0a0] animate-spin" />
-                {loginMethod === 'bitcoin'
-                  ? m('Validando carteira Bitcoin...', 'Validating Bitcoin wallet...', 'Validando cartera Bitcoin...', 'Validazione wallet Bitcoin...')
-                  : loginMethod === 'web3'
+                {loginMethod === 'web3'
                   ? m('Conectando carteira...', 'Connecting wallet...', 'Conectando wallet...', 'Connessione wallet...')
                   : m('Entrando...', 'Signing in...', 'Iniciando sesión...', 'Accesso...')}
               </div>
@@ -2402,13 +2394,13 @@ export default function App() {
 
             <button onClick={openNew} className="bg-[#5A5A40] hover:bg-[#6c6c51] px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md ml-2 transition-transform hover:scale-105 active:scale-95 text-[#d0d0a0]">
               <Plus size={20} /> <span className="">Novo</span>
-            </button>
+              </button>
           </div>
         </div>
       </header>
 
       {/* MAIN */}
-      <main className="max-w-5xl mx-auto px-4 py-8 space-y-10">
+      <main className="max-w-6xl mx-auto px-4 py-8 space-y-10">
         <div>
           <h2 className="text-4xl font-bold tracking-tight">{getGreeting()}</h2>
           <p className="text-gray-500 mt-2">{t('app.summary')}</p>
@@ -2425,13 +2417,26 @@ export default function App() {
         )}
 
         {/* TABS */}
-        <div className="flex gap-8 border-b border-gray-800 overflow-x-auto scrollbar-hide">
-          {(['overview','cashflow','calendar','clients','shared','wallet','history'] as const).map(id => (
-            <button key={id} onClick={() => setActiveTab(id as any)} className={`pb-3 text-sm font-medium transition-all relative whitespace-nowrap ${activeTab === id ? 'text-[#d0d0a0]' : 'text-gray-500 hover:text-gray-300'}`}>
-              {id === 'shared' ? 'Compartilhado' : id === 'wallet' ? '⚡ Bitcoin' : id.charAt(0).toUpperCase() + id.slice(1)}
-              {activeTab === id && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-[#d0d0a0] rounded-full" />}
-            </button>
+        <div className="overflow-x-auto scrollbar-hide">
+          <div className="inline-flex min-w-full gap-2 rounded-[24px] border border-gray-800 bg-[#111111]/85 p-2">
+            {tabMeta.map(({ id, label, accent }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap ${
+                  activeTab === id
+                    ? accent
+                      ? 'bg-[#d0d0a0] text-[#0a0a0a] shadow-[0_10px_30px_rgba(208,208,160,0.18)]'
+                      : 'bg-white/[0.08] text-white'
+                    : accent
+                      ? 'text-[#d8d8b5] hover:bg-[#d0d0a0]/10'
+                      : 'text-gray-500 hover:bg-white/[0.04] hover:text-gray-200'
+                }`}
+              >
+                {label}
+              </button>
           ))}
+          </div>
         </div>
 
         {/* CONTENT */}
@@ -2461,17 +2466,7 @@ export default function App() {
               />
             : <div className="flex flex-col items-center py-20 gap-3 text-gray-500"><p className="text-sm">Faça login para ver assinaturas compartilhadas</p></div>
         )}
-        {activeTab === 'wallet' && (
-          user
-            ? <LightningWallet
-                userId={user.id}
-                userHandle={userHandle}
-                btcPriceUsd={exchangeRates['BTC'] ? 1 / exchangeRates['BTC'] : undefined}
-              />
-            : <div className="flex flex-col items-center py-20 gap-3 text-gray-500">
-                <p className="text-sm">Faça login para acessar a carteira Bitcoin</p>
-              </div>
-        )}
+        {/* Bitcoin wallet tab removed */}
         {activeTab === 'history' && (
           <div className="opacity-70 grayscale-[0.5]">
             <SubscriptionList subscriptions={disabledSubs} baseCurrency={baseCurrency} exchangeRates={exchangeRates} onEdit={openEdit} onDelete={setSubToDelete} onToggleStatus={handleToggleStatus} />
@@ -2485,7 +2480,6 @@ export default function App() {
           onSave={setUserName}
           onLogin={() => handleLogin('google')}
           onWeb3Login={canUseWeb3Login ? () => handleLogin('web3') : undefined}
-          onBitcoinLogin={() => setShowBitcoinLoginModal(true)}
           canUseWeb3Login={canUseWeb3Login}
           loggingIn={loggingIn}
           loginMethod={loginMethod}
@@ -2493,15 +2487,6 @@ export default function App() {
             localStorage.setItem('boa_welcome_skipped', '1');
             setWelcomeSkipped(true);
           }}
-        />
-      )}
-      {showBitcoinLoginModal && (
-        <BitcoinWalletLoginModal
-          loading={loggingIn && loginMethod === 'bitcoin'}
-          onClose={() => {
-            if (!loggingIn) setShowBitcoinLoginModal(false);
-          }}
-          onSubmit={handleBitcoinWalletLogin}
         />
       )}
       {isFormOpen && <SubscriptionForm subscription={editingSub} onSave={handleSave} onClose={() => setIsFormOpen(false)} baseCurrency={baseCurrency} exchangeRates={exchangeRates} />}

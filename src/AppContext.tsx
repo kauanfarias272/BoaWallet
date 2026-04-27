@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Language } from './i18n';
 import { auth as firebaseAuth } from './firebase';
 import { supabase } from './supabase';
 import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
+import { persistSessionTokens, loadPersistedTokens, clearPersistedTokens } from './lib/durableSession';
 
 export type Gender = 'M' | 'F' | 'N';
 
@@ -123,8 +125,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setUserName(currentUser.user_metadata.full_name);
         }
         await loadHandle(currentUser.id);
+        if (session?.refresh_token) {
+          persistSessionTokens(session.refresh_token, session.access_token).catch(() => {});
+        }
         setAuthLoading(false);
       } else {
+        // Native: try recovering session from durable store (SharedPreferences)
+        if (Capacitor.getPlatform() !== 'web') {
+          try {
+            const { refreshToken } = await loadPersistedTokens();
+            if (refreshToken) {
+              console.log('[BoaWallet] Attempting session recovery from durable store...');
+              const { data, error } = await supabase.auth.setSession({
+                refresh_token: refreshToken,
+                access_token: '',
+              });
+              if (!error && data?.session?.user) {
+                setUser(data.session.user);
+                if (data.session.user.user_metadata?.full_name) {
+                  setUserName(data.session.user.user_metadata.full_name);
+                }
+                await loadHandle(data.session.user.id);
+                await persistSessionTokens(data.session.refresh_token, data.session.access_token);
+                console.log('[BoaWallet] Session recovered from durable store.');
+                setAuthLoading(false);
+                // skip Firebase reauth — session is restored
+                const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+                  const currentSessionUser = session?.user || null;
+                  setUser(currentSessionUser);
+                  if (currentSessionUser?.user_metadata?.full_name) {
+                    setUserName(currentSessionUser.user_metadata.full_name);
+                    await loadHandle(currentSessionUser.id);
+                  } else {
+                    setUserName('');
+                    setUserHandle('');
+                    setGoogleAccessToken(null);
+                    localStorage.removeItem('userHandle');
+                  }
+                  if (session?.refresh_token) {
+                    persistSessionTokens(session.refresh_token, session.access_token).catch(() => {});
+                  } else {
+                    clearPersistedTokens().catch(() => {});
+                  }
+                });
+                supaUnsub = () => subscription.unsubscribe();
+                return; // early return — init complete
+              } else {
+                console.warn('[BoaWallet] Durable session recovery failed:', error?.message);
+                await clearPersistedTokens();
+              }
+            }
+          } catch (e) {
+            console.warn('[BoaWallet] Durable store read failed:', e);
+            await clearPersistedTokens().catch(() => {});
+          }
+        }
+
         const restored = await tryReauthFromFirebase();
         if (restored) {
           setAuthLoading(false);
@@ -154,6 +210,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setGoogleAccessToken(null);
           localStorage.removeItem('userHandle');
         }
+
+        // Persist tokens to durable store (native only)
+        if (session?.refresh_token) {
+          persistSessionTokens(session.refresh_token, session.access_token).catch(() => {});
+        } else {
+          clearPersistedTokens().catch(() => {});
+        }
       });
 
       supaUnsub = () => subscription.unsubscribe();
@@ -163,6 +226,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       supaUnsub?.();
     };
+  }, []);
+
+  // Native: refresh session proactively on app resume
+  useEffect(() => {
+    if (Capacitor.getPlatform() === 'web') return;
+
+    const listener = CapApp.addListener('appStateChange', async ({ isActive }) => {
+      if (!isActive) return;
+      console.log('[BoaWallet] App resumed, refreshing session...');
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const expiresAt = session.expires_at ?? 0;
+          const now = Math.floor(Date.now() / 1000);
+          if (expiresAt - now < 300) {
+            const { data } = await supabase.auth.refreshSession();
+            if (data.session) {
+              await persistSessionTokens(data.session.refresh_token, data.session.access_token);
+            }
+          }
+        } else {
+          // Session lost while backgrounded — try durable recovery
+          const { refreshToken } = await loadPersistedTokens();
+          if (refreshToken) {
+            const { data } = await supabase.auth.setSession({
+              refresh_token: refreshToken,
+              access_token: '',
+            });
+            if (data?.session) {
+              await persistSessionTokens(data.session.refresh_token, data.session.access_token);
+              console.log('[BoaWallet] Session recovered on resume from durable store.');
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[BoaWallet] Resume session refresh failed:', e);
+      }
+    });
+
+    return () => { listener.then(l => l.remove()); };
   }, []);
 
   useEffect(() => {

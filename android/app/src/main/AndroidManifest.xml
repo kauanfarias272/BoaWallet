@@ -24,6 +24,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:host="auth" android:scheme="io.boa.wallet" />
             </intent-filter>
+            <!-- App Links for HTTPS bridge page fallback -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:host="kauanfarias272.github.io" android:scheme="https" android:pathPrefix="/BoaWallet/auth" />
+            </intent-filter>
         </activity>
 
         <!-- Serviço de sincronização com Wear OS -->
