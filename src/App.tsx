@@ -742,15 +742,16 @@ export default function App() {
       }
       if (isNativePlatform) {
         oauthHandledRef.current = false;
-        // Native OAuth flow — Supabase redirects directly to io.boa.wallet://auth?code=...
-        // Android intercepts the custom scheme via the intent filter in AndroidManifest.xml
-        // and delivers it to the app via Capacitor's appUrlOpen event.
-        // The code is then exchanged for a session in handleOAuthUrl().
+        // Native OAuth flow — uses the HTTPS bridge page as intermediary:
+        // 1. Supabase redirects to kauanfarias272.github.io/BoaWallet/auth/?code=...
+        // 2. The bridge page does a JS redirect to io.boa.wallet://auth?code=...
+        // 3. Android intercepts the custom scheme → app receives the code via appUrlOpen
+        // 4. If the redirect fails, browserFinished polling recovers the session
         try {
           const { data: oauthData, error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: 'google',
             options: {
-              redirectTo: NATIVE_OAUTH_CALLBACK,
+              redirectTo: PUBLIC_OAUTH_CALLBACK,
               skipBrowserRedirect: true,
             },
           });
