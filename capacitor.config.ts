@@ -15,10 +15,6 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
   },
   android: {
-    // Prevent horizontal scrolling / content wider than viewport
-    overScrollMode: 'never' as any,
-    // Ensure WebView fits within the screen bounds
-    initialFocus: false as any,
     backgroundColor: '#0a0a0a',
   },
 };
