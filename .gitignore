@@ -6,5 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
-.claude/worktrees/  
-manoscripto/  
+.claude/
+*.apk
+*.aab
+*.keystore
+android/
+manoscripto/
