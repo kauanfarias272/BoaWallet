@@ -8,6 +8,7 @@ import { auth as firebaseAuth } from './firebase';
 import { supabase } from './supabase';
 import { Currency, DEFAULT_EXCHANGE_RATES } from './types';
 import { persistSessionTokens, loadPersistedTokens, clearPersistedTokens } from './lib/durableSession';
+import { withTimeout } from './lib/requestTimeout';
 
 export type Gender = 'M' | 'F' | 'N';
 
@@ -54,7 +55,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const loadHandle = async (uid: string) => {
       try {
-        const { data } = await supabase.from('users').select('username').eq('id', uid).single();
+        const { data } = await withTimeout(
+          supabase.from('users').select('username').eq('id', uid).maybeSingle(),
+          4000,
+          'User handle request timed out'
+        );
         if (data?.username) {
           setUserHandle(data.username);
           localStorage.setItem('userHandle', data.username);
@@ -114,9 +119,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
 
     const init = async () => {
+      try {
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await withTimeout(supabase.auth.getSession(), 5000, 'Initial auth session request timed out');
       const currentUser = session?.user || null;
 
       if (currentUser) {
@@ -136,10 +142,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const { refreshToken } = await loadPersistedTokens();
             if (refreshToken) {
               console.log('[BoaWallet] Attempting session recovery from durable store...');
-              const { data, error } = await supabase.auth.setSession({
-                refresh_token: refreshToken,
-                access_token: '',
-              });
+              const { data, error } = await withTimeout(
+                supabase.auth.setSession({
+                  refresh_token: refreshToken,
+                  access_token: '',
+                }),
+                6000,
+                'Durable session restore timed out'
+              );
               if (!error && data?.session?.user) {
                 setUser(data.session.user);
                 if (data.session.user.user_metadata?.full_name) {
@@ -220,6 +230,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
 
       supaUnsub = () => subscription.unsubscribe();
+      } catch (error) {
+        console.warn('[BoaWallet] Auth init failed:', error);
+        setAuthLoading(false);
+      }
     };
 
     init();

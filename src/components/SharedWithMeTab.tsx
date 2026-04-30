@@ -7,6 +7,7 @@ import { bestLogoUrl } from '../lib/logos';
 import { FoundBoaUser, searchBoaUsers, searchCachedBoaUsers } from '../lib/userSearch';
 import { useAppContext } from '../AppContext';
 import { useTranslation } from '../i18n';
+import { withTimeout } from '../lib/requestTimeout';
 import {
   WalletSnapshot,
   chargeSharedMembership,
@@ -63,6 +64,9 @@ type PayState = 'idle' | 'paying' | 'paid' | 'error';
 
 type TFn = ReturnType<typeof useTranslation>;
 
+const hasSharedAccess = (entry: Pick<SharedEntry, 'accepted' | 'payment_status'>) =>
+  !!entry.accepted || ['paid', 'active'].includes(entry.payment_status || '');
+
 interface SharedCardProps {
   entry: SharedEntry;
   pending: boolean;
@@ -105,7 +109,7 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
 
   const fetchWallet = async () => {
     try {
-      setWalletSnapshot(await getWalletSnapshot(userId));
+      setWalletSnapshot(await withTimeout(getWalletSnapshot(userId), 4500, 'Wallet snapshot timed out'));
     } catch {
       setWalletSnapshot(null);
     }
@@ -114,12 +118,16 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
   const fetchShared = async () => {
     setLoadingEntries(true);
     try {
-      const { data: members, error } = await supabase
-        .from('subscription_members')
-        .select('*')
-        .eq('member_id', userId)
-        .or('payment_status.neq.cancelled,payment_status.is.null')
-        .order('created_at', { ascending: false });
+      const { data: members, error } = await withTimeout(
+        supabase
+          .from('subscription_members')
+          .select('*')
+          .eq('member_id', userId)
+          .or('payment_status.neq.cancelled,payment_status.is.null')
+          .order('created_at', { ascending: false }),
+        7000,
+        'Shared subscriptions request timed out'
+      );
 
       if (error || !members) {
         setEntries([]);
@@ -129,28 +137,42 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
       const enriched = await Promise.all(
         members.map(async (member: SharedEntry) => {
           const [{ data: subscription }, { data: owner }] = await Promise.all([
-            supabase
-              .from('subscriptions')
-              .select('id,name,emoji,logoUrl,costAmount,costCurrency,billingCycle')
-              .eq('id', member.subscription_id)
-              .single(),
-            supabase
-              .from('users')
-              .select('id,name,username')
-              .eq('id', member.owner_id)
-              .single(),
+            withTimeout(
+              supabase
+                .from('subscriptions')
+                .select('id,name,emoji,logoUrl,costAmount,costCurrency,billingCycle')
+                .eq('id', member.subscription_id)
+                .maybeSingle(),
+              4500,
+              'Shared subscription detail timed out'
+            ).catch(() => ({ data: null })),
+            withTimeout(
+              supabase
+                .from('users')
+                .select('id,name,username')
+                .eq('id', member.owner_id)
+                .maybeSingle(),
+              4500,
+              'Shared subscription owner timed out'
+            ).catch(() => ({ data: null })),
           ]);
 
           return {
             ...member,
-            subscription: subscription ?? undefined,
+            subscription: subscription ?? {
+              id: member.subscription_id,
+              name: 'Assinatura compartilhada',
+              emoji: 'B',
+              costAmount: Number(member.amount) || 0,
+              costCurrency: member.currency || 'BRL',
+              billingCycle: 'Monthly',
+            },
             owner: owner ?? undefined,
           };
         })
       );
 
-      // Drop zombie entries whose subscription no longer exists
-      setEntries(enriched.filter((e) => !!e.subscription));
+      setEntries(enriched);
     } catch {
       setEntries([]);
     } finally {
@@ -162,12 +184,16 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
   const fetchSent = async () => {
     setLoadingSent(true);
     try {
-      const { data: members, error } = await supabase
-        .from('subscription_members')
-        .select('*')
-        .eq('owner_id', userId)
-        .or('payment_status.neq.cancelled,payment_status.is.null')
-        .order('created_at', { ascending: false });
+      const { data: members, error } = await withTimeout(
+        supabase
+          .from('subscription_members')
+          .select('*')
+          .eq('owner_id', userId)
+          .or('payment_status.neq.cancelled,payment_status.is.null')
+          .order('created_at', { ascending: false }),
+        7000,
+        'Sent shared subscriptions request timed out'
+      );
 
       if (error || !members) {
         setSentEntries([]);
@@ -177,28 +203,43 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
       const enriched = await Promise.all(
         members.map(async (member: SharedEntry) => {
           const [{ data: subscription }, { data: memberProfile }] = await Promise.all([
-            supabase
-              .from('subscriptions')
-              .select('id,name,emoji,logoUrl,costAmount,costCurrency,billingCycle')
-              .eq('id', member.subscription_id)
-              .single(),
-            supabase
-              .from('users')
-              .select('id,name,username')
-              .eq('id', member.member_id)
-              .single(),
+            withTimeout(
+              supabase
+                .from('subscriptions')
+                .select('id,name,emoji,logoUrl,costAmount,costCurrency,billingCycle')
+                .eq('id', member.subscription_id)
+                .maybeSingle(),
+              4500,
+              'Sent shared subscription detail timed out'
+            ).catch(() => ({ data: null })),
+            withTimeout(
+              supabase
+                .from('users')
+                .select('id,name,username')
+                .eq('id', member.member_id)
+                .maybeSingle(),
+              4500,
+              'Sent shared subscription member timed out'
+            ).catch(() => ({ data: null })),
           ]);
 
           return {
             ...member,
-            subscription: subscription ?? undefined,
+            subscription: subscription ?? {
+              id: member.subscription_id,
+              name: 'Assinatura compartilhada',
+              emoji: 'B',
+              costAmount: Number(member.amount) || 0,
+              costCurrency: member.currency || 'BRL',
+              billingCycle: 'Monthly',
+            },
             // reuse owner field to hold the member profile for display purposes
             owner: (memberProfile as any) ?? undefined,
           };
         })
       );
 
-      setSentEntries(enriched.filter((e) => !!e.subscription));
+      setSentEntries(enriched);
     } catch {
       setSentEntries([]);
     } finally {
@@ -283,8 +324,8 @@ export function SharedWithMeTab({ userId, subscriptions: _subscriptions, onShare
     }
   };
 
-  const pending = entries.filter((entry) => !entry.accepted);
-  const accepted = entries.filter((entry) => entry.accepted);
+  const pending = entries.filter((entry) => !hasSharedAccess(entry));
+  const accepted = entries.filter(hasSharedAccess);
   const cleanQuery = query.replace('@', '').trim();
   const showCachedSuggestions = cleanQuery === '' && query.trim().startsWith('@') && userResults.length > 0;
 
