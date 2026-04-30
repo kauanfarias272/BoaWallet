@@ -1,0 +1,6 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Mannique</title>
+  <rect width="1024" height="1024" fill="#fff"/>
+  <path fill="#181413" fill-rule="evenodd" d="M395 305 512 392.5 629 305v224L512 441.5 395 529V305Zm36 73v78.5l53-39.5-53-39Zm162 78.5V378l-53 39 53 39.5ZM427 324.5l85 63.5 85-63.5V346l-85 63.5L427 346v-21.5Zm0 185 85-63.5 85 63.5V488l-85-63.5L427 488v21.5Z" clip-rule="evenodd"/>
+  <text x="512" y="692" text-anchor="middle" fill="#181413" font-family="'Times New Roman', Georgia, serif" font-size="122" font-weight="700" letter-spacing="17">MANNIQUE</text>
+</svg>
