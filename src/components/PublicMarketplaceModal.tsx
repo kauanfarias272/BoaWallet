@@ -5,6 +5,7 @@ import { Currency, Subscription } from '../types';
 import { bestLogoUrl } from '../lib/logos';
 import { formatCurrency } from '../lib/utils';
 import { useAppContext } from '../AppContext';
+import { withTimeout } from '../lib/requestTimeout';
 import {
   WalletSnapshot,
   chargeSharedMembership,
@@ -128,7 +129,7 @@ export function PublicMarketplaceModal({ userId, onClose }: Props) {
 
   const loadWallet = async () => {
     try {
-      setWalletSnapshot(await getWalletSnapshot(userId));
+      setWalletSnapshot(await withTimeout(getWalletSnapshot(userId), 4500, 'Wallet snapshot timed out'));
     } catch {
       setWalletSnapshot(null);
     }
@@ -139,11 +140,15 @@ export function PublicMarketplaceModal({ userId, onClose }: Props) {
     else setLoading(true);
 
     try {
-      const { data: subs, error } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .eq('isPublic', true)
-        .order('updatedAt', { ascending: false });
+      const { data: subs, error } = await withTimeout(
+        supabase
+          .from('subscriptions')
+          .select('*')
+          .eq('isPublic', true)
+          .order('updatedAt', { ascending: false }),
+        7000,
+        'Public subscriptions request timed out'
+      );
 
       if (error) throw error;
 
@@ -153,10 +158,18 @@ export function PublicMarketplaceModal({ userId, onClose }: Props) {
 
       const [{ data: owners }, { data: memberships }] = await Promise.all([
         ownerIds.length > 0
-          ? supabase.from('users').select('id,name,username').in('id', ownerIds)
+          ? withTimeout(
+              supabase.from('users').select('id,name,username').in('id', ownerIds),
+              5000,
+              'Public subscription owners request timed out'
+            ).catch(() => ({ data: [] }))
           : Promise.resolve({ data: [] }),
         subscriptionIds.length > 0
-          ? supabase.from('subscription_members').select('*').eq('member_id', userId).in('subscription_id', subscriptionIds)
+          ? withTimeout(
+              supabase.from('subscription_members').select('*').eq('member_id', userId).in('subscription_id', subscriptionIds),
+              5000,
+              'Public subscription memberships request timed out'
+            ).catch(() => ({ data: [] }))
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -200,17 +213,25 @@ export function PublicMarketplaceModal({ userId, onClose }: Props) {
     void (async () => {
       setCommentsLoading(true);
       try {
-        const { data, error } = await supabase
-          .from('public_subscription_comments')
-          .select('*')
-          .eq('subscription_id', listing!.id)
-          .order('created_at', { ascending: false });
+        const { data, error } = await withTimeout(
+          supabase
+            .from('public_subscription_comments')
+            .select('*')
+            .eq('subscription_id', listing!.id)
+            .order('created_at', { ascending: false }),
+          6000,
+          'Public subscription comments request timed out'
+        );
 
         if (error) throw error;
 
         const authorIds = Array.from(new Set((((data as MarketplaceComment[] | null) || []).map((comment) => comment.author_id))));
         const { data: authors } = authorIds.length > 0
-          ? await supabase.from('users').select('id,name,username').in('id', authorIds)
+          ? await withTimeout(
+              supabase.from('users').select('id,name,username').in('id', authorIds),
+              5000,
+              'Public comment authors request timed out'
+            ).catch(() => ({ data: [] }))
           : { data: [] };
 
         const authorsById = Object.fromEntries((((authors as any[] | null) || []).map((author) => [author.id, author])));

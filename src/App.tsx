@@ -88,6 +88,28 @@ function normalizeOAuthCallbackUrl(url: string) {
   return trimmed;
 }
 
+function readOAuthParam(url: string, key: string) {
+  const candidates = [url.trim(), normalizeOAuthCallbackUrl(url)];
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      const searchValue = parsed.searchParams.get(key);
+      if (searchValue) return searchValue;
+
+      const hash = parsed.hash.replace(/^#/, '');
+      if (hash) {
+        const hashValue = new URLSearchParams(hash.replace(/^\?/, '')).get(key);
+        if (hashValue) return hashValue;
+      }
+    } catch {
+      const match = candidate.match(new RegExp(`[?#&]${key}=([^&#]+)`));
+      if (match?.[1]) return decodeURIComponent(match[1].replace(/\+/g, ' '));
+    }
+  }
+
+  return null;
+}
+
 function UserAvatar({ user, onClick }: { user: import('@supabase/supabase-js').User; onClick: () => void }) {
   const [imgError, setImgError] = React.useState(false);
   const avatarUrl = user.user_metadata?.avatar_url || user.user_metadata?.picture;
@@ -196,12 +218,15 @@ export default function App() {
 
   const isNativePlatform = Capacitor.getPlatform() !== 'web';
   const canUseWeb3Login = !isNativePlatform && typeof window !== 'undefined' && !!((window as any).ethereum || (window as any).solana);
+  const isSharedAccessGranted = (row: Pick<SubscriptionMemberRow, 'accepted' | 'payment_status'>) =>
+    !!row.accepted || ['paid', 'active'].includes(row.payment_status || '');
 
   useEffect(() => { localStorage.setItem('theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('baseCurrency', baseCurrency); }, [baseCurrency]);
 
   // Tracks whether a deep link was received so browserFinished doesn't duplicate the toast
   const oauthHandledRef = useRef(false);
+  const oauthCallbackInFlightRef = useRef(false);
 
   const showLoginSuccessToast = () =>
     showToast(m('Login realizado!', 'Logged in!', 'Sesion iniciada!', 'Accesso effettuato!'), true);
@@ -210,8 +235,21 @@ export default function App() {
     showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesiÃ³n. IntÃ©ntalo de nuevo.', 'Errore di accesso. Riprova.'), false);
 
   const getSessionSafely = async () => {
-    const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    const { data: { session } } = await withTimeout(
+      supabase.auth.getSession(),
+      4000,
+      'Session check timed out'
+    ).catch(() => ({ data: { session: null } }));
     return session;
+  };
+
+  const waitForSessionSafely = async () => {
+    for (const delay of [0, 350, 1000, 2000]) {
+      if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      const session = await getSessionSafely();
+      if (session) return session;
+    }
+    return null;
   };
 
   const closeOauthBrowser = async () => {
@@ -225,18 +263,25 @@ export default function App() {
   // Handle OAuth callback from the native deep link or hosted bridge page
   const handleOAuthUrl = async (url: string) => {
     if (!isOAuthCallbackUrl(url)) return false;
+    if (oauthCallbackInFlightRef.current) {
+      oauthHandledRef.current = true;
+      console.log('[BoaWallet] OAuth callback already in progress, skipping duplicate.');
+      return true;
+    }
+
+    oauthCallbackInFlightRef.current = true;
     oauthHandledRef.current = true;
     console.log('[BoaWallet] Handling OAuth callback:', url);
     await closeOauthBrowser();
     try {
       // Normalize custom scheme → https so URL parsing is reliable in all JS environments
       const normalizedUrl = normalizeOAuthCallbackUrl(url);
-      const hasError = /(?:\?|&|#)error=/.test(normalizedUrl);
-      const hasCode = /(?:\?|&|#)code=/.test(normalizedUrl);
+      const oauthError = readOAuthParam(normalizedUrl, 'error') || readOAuthParam(normalizedUrl, 'error_description');
+      const authCode = readOAuthParam(normalizedUrl, 'code');
 
-      if (hasError) {
-        console.warn('[BoaWallet] OAuth callback contains an error:', normalizedUrl);
-        const fallbackSession = await getSessionSafely();
+      if (oauthError) {
+        console.warn('[BoaWallet] OAuth callback contains an error:', oauthError);
+        const fallbackSession = await waitForSessionSafely();
         if (fallbackSession) {
           showLoginSuccessToast();
         } else {
@@ -245,8 +290,8 @@ export default function App() {
         return true;
       }
 
-      if (!hasCode) {
-        const existingSession = await getSessionSafely();
+      if (!authCode) {
+        const existingSession = await waitForSessionSafely();
         if (existingSession) {
           console.log('[BoaWallet] Existing session found without code exchange.');
           showLoginSuccessToast();
@@ -263,7 +308,7 @@ export default function App() {
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
+          const { data, error } = await supabase.auth.exchangeCodeForSession(authCode);
           if (!error && data?.session) {
             exchangeSession = data.session;
             break;
@@ -286,7 +331,7 @@ export default function App() {
         showLoginSuccessToast();
       } else {
         console.warn('[BoaWallet] Code exchange failed after retries, checking existing session...', lastError?.message || lastError);
-        const fallbackSession = await getSessionSafely();
+        const fallbackSession = await waitForSessionSafely();
         if (fallbackSession) {
           console.log('[BoaWallet] Fallback session found.');
           showLoginSuccessToast();
@@ -296,12 +341,14 @@ export default function App() {
       }
     } catch (e: any) {
       console.error('[BoaWallet] OAuth exchange error:', e);
-      const fallbackSession = await getSessionSafely();
+      const fallbackSession = await waitForSessionSafely();
       if (fallbackSession) {
         showLoginSuccessToast();
       } else {
         showLoginFailureToast();
       }
+    } finally {
+      oauthCallbackInFlightRef.current = false;
     }
   };
 
@@ -484,8 +531,28 @@ export default function App() {
       return;
     }
 
+    let cancelled = false;
+
+    const readCachedSubscriptions = (key: string) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.map(normalizeSubscription) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const cachedOwned = readCachedSubscriptions('subscriptions_' + user.id);
+    const fallbackOwned = cachedOwned.length > 0 ? cachedOwned : readCachedSubscriptions('subscriptions');
+    const cachedReceived = readCachedSubscriptions('received_subscriptions_' + user.id);
+
+    if (fallbackOwned.length > 0) setSubscriptions(fallbackOwned);
+    if (cachedReceived.length > 0) setReceivedSubscriptions(cachedReceived);
+
     const fetchInitialData = async () => {
-      if (!user) return;
+      if (!user || cancelled) return;
       console.log('[BoaWallet] Syncing data from cloud...');
       setSyncLoading(true);
       
@@ -493,7 +560,11 @@ export default function App() {
         let ownedSubscriptions: Subscription[] = [];
 
         // 1. Fetch from Supabase (Primary)
-        const { data: subs, error: subsError } = await supabase.from('subscriptions').select('*').eq('user_id', user.id);
+        const { data: subs, error: subsError } = await withTimeout(
+          supabase.from('subscriptions').select('*').eq('user_id', user.id),
+          7000,
+          'Subscriptions request timed out'
+        );
         
         if (subs && subs.length > 0) {
           console.log('[BoaWallet] Found Supabase match:', subs.length);
@@ -508,7 +579,11 @@ export default function App() {
                  if (newSubs.length > 0) {
                     console.log('[BoaWallet] Merging local subscriptions:', newSubs.length);
                     const toUpload = newSubs.map(s => ({ ...s, user_id: user.id }));
-                    await supabase.from('subscriptions').upsert(toUpload);
+                    await withTimeout(
+                      supabase.from('subscriptions').upsert(toUpload),
+                      5000,
+                      'Local subscriptions merge timed out'
+                    );
                     subs.push(...toUpload);
                  }
                }
@@ -521,7 +596,7 @@ export default function App() {
           // 2. Try Firebase Migration (Secondary/Old)
           try {
             const q = query(collection(db, 'subscriptions'), where('user_id', '==', user.id));
-            const querySnapshot = await getDocs(q);
+            const querySnapshot = await withTimeout(getDocs(q), 5000, 'Firebase migration request timed out');
             const fireSubs: any[] = [];
             querySnapshot.forEach((doc) => { fireSubs.push({ ...doc.data(), id: doc.id }); });
             
@@ -530,7 +605,11 @@ export default function App() {
               ownedSubscriptions = fireSubs.map(normalizeSubscription);
               // Migrate to Supabase
               for (const sub of fireSubs) { 
-                await supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }); 
+                await withTimeout(
+                  supabase.from('subscriptions').upsert({ ...sub, user_id: user.id }),
+                  5000,
+                  'Firebase migration save timed out'
+                ); 
               }
             } else {
               // 3. Last resort: LocalStorage
@@ -547,16 +626,30 @@ export default function App() {
         }
 
         const [outgoingRowsResult, incomingRowsResult] = await Promise.all([
-          supabase
+          withTimeout(
+            supabase
             .from('subscription_members')
             .select('*')
             .eq('owner_id', user.id)
             .order('created_at', { ascending: false }),
-          supabase
+            7000,
+            'Outgoing shared subscriptions request timed out'
+          ).catch((error) => {
+            console.error('[BoaWallet] Failed to load outgoing share rows', error);
+            return { data: [] as SubscriptionMemberRow[] };
+          }),
+          withTimeout(
+            supabase
             .from('subscription_members')
             .select('*')
             .eq('member_id', user.id)
             .order('created_at', { ascending: false }),
+            7000,
+            'Incoming shared subscriptions request timed out'
+          ).catch((error) => {
+            console.error('[BoaWallet] Failed to load incoming paid/share rows', error);
+            return { data: [] as SubscriptionMemberRow[] };
+          }),
         ]);
 
         const outgoingRows = ((outgoingRowsResult.data as SubscriptionMemberRow[] | null) || []);
@@ -570,15 +663,29 @@ export default function App() {
         );
 
         const incomingSourceIds = Array.from(
-          new Set(incomingRows.filter((row) => row.accepted).map((row) => row.subscription_id))
+          new Set(incomingRows.filter(isSharedAccessGranted).map((row) => row.subscription_id))
         );
 
         const [profilesResult, incomingSourcesResult] = await Promise.all([
           profileIds.length > 0
-            ? supabase.from('users').select('id,name,username').in('id', profileIds)
+            ? withTimeout(
+                supabase.from('users').select('id,name,username').in('id', profileIds),
+                6000,
+                'Profiles request timed out'
+              ).catch((error) => {
+                console.error('[BoaWallet] Failed to load shared profiles', error);
+                return { data: [] as FriendProfile[] };
+              })
             : Promise.resolve({ data: [] as FriendProfile[] }),
           incomingSourceIds.length > 0
-            ? supabase.from('subscriptions').select('*').in('id', incomingSourceIds)
+            ? withTimeout(
+                supabase.from('subscriptions').select('*').in('id', incomingSourceIds),
+                7000,
+                'Incoming shared subscriptions source request timed out'
+              ).catch((error) => {
+                console.error('[BoaWallet] Failed to load paid app sources', error);
+                return { data: [] as any[] };
+              })
             : Promise.resolve({ data: [] as any[] }),
         ]);
 
@@ -600,15 +707,25 @@ export default function App() {
           user.id
         );
 
+        if (cancelled) return;
+
         setSubscriptions(mergedOwnedSubscriptions);
         setReceivedSubscriptions(receivedSharedSubscriptions);
         localStorage.setItem('subscriptions_' + user.id, JSON.stringify(mergedOwnedSubscriptions));
+        localStorage.setItem('received_subscriptions_' + user.id, JSON.stringify(receivedSharedSubscriptions));
         void refreshFriends(user.id);
         void prefetchBoaUsers(user.id, 40);
         // Sincroniza dados com o app do relógio
         void syncToWatch(user, userHandle, mergedOwnedSubscriptions, baseCurrency, exchangeRates);
 
-        const { data: adjs, error: adjsError } = await supabase.from('adjustments').select('*').eq('user_id', user.id);
+        const { data: adjs, error: adjsError } = await withTimeout(
+          supabase.from('adjustments').select('*').eq('user_id', user.id),
+          5000,
+          'Adjustments request timed out'
+        ).catch((error) => {
+          console.error('[BoaWallet] Failed to load adjustments', error);
+          return { data: null, error };
+        });
         if (adjs && adjs.length > 0) {
           setAdjustments(adjs as any[]);
           localStorage.setItem('adjustments_' + user.id, JSON.stringify(adjs));
@@ -616,7 +733,7 @@ export default function App() {
       } catch (err) {
         console.error('[BoaWallet] Sync failed', err);
       } finally {
-        setSyncLoading(false);
+        if (!cancelled) setSyncLoading(false);
       }
     };
 
@@ -635,6 +752,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'subscription_members', filter: `member_id=eq.${user.id}` }, fetchInitialData).subscribe();
 
     return () => {
+      cancelled = true;
       supabase.removeChannel(subsSubscription);
       supabase.removeChannel(adjsSubscription);
       supabase.removeChannel(outgoingSharesSubscription);
@@ -1575,7 +1693,7 @@ export default function App() {
     const sourceById = Object.fromEntries(sharedSourceSubscriptions.map((subscription) => [subscription.id, subscription]));
 
     return incomingRows
-      .filter((row) => row.accepted)
+      .filter(isSharedAccessGranted)
       .map((row) => {
         const source = sourceById[row.subscription_id];
         const owner = profilesById[row.owner_id];
