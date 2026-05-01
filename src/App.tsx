@@ -88,6 +88,28 @@ function normalizeOAuthCallbackUrl(url: string) {
   return trimmed;
 }
 
+function readOAuthParam(url: string, key: string) {
+  const candidates = [url.trim(), normalizeOAuthCallbackUrl(url)];
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      const searchValue = parsed.searchParams.get(key);
+      if (searchValue) return searchValue;
+
+      const hash = parsed.hash.replace(/^#/, '');
+      if (hash) {
+        const hashValue = new URLSearchParams(hash.replace(/^\?/, '')).get(key);
+        if (hashValue) return hashValue;
+      }
+    } catch {
+      const match = candidate.match(new RegExp(`[?#&]${key}=([^&#]+)`));
+      if (match?.[1]) return decodeURIComponent(match[1].replace(/\+/g, ' '));
+    }
+  }
+
+  return null;
+}
+
 function UserAvatar({ user, onClick }: { user: import('@supabase/supabase-js').User; onClick: () => void }) {
   const [imgError, setImgError] = React.useState(false);
   const avatarUrl = user.user_metadata?.avatar_url || user.user_metadata?.picture;
@@ -204,6 +226,7 @@ export default function App() {
 
   // Tracks whether a deep link was received so browserFinished doesn't duplicate the toast
   const oauthHandledRef = useRef(false);
+  const oauthCallbackInFlightRef = useRef(false);
 
   const showLoginSuccessToast = () =>
     showToast(m('Login realizado!', 'Logged in!', 'Sesion iniciada!', 'Accesso effettuato!'), true);
@@ -212,8 +235,21 @@ export default function App() {
     showToast(m('Erro ao fazer login. Tente novamente.', 'Login failed. Please try again.', 'Error al iniciar sesiÃ³n. IntÃ©ntalo de nuevo.', 'Errore di accesso. Riprova.'), false);
 
   const getSessionSafely = async () => {
-    const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    const { data: { session } } = await withTimeout(
+      supabase.auth.getSession(),
+      4000,
+      'Session check timed out'
+    ).catch(() => ({ data: { session: null } }));
     return session;
+  };
+
+  const waitForSessionSafely = async () => {
+    for (const delay of [0, 350, 1000, 2000]) {
+      if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      const session = await getSessionSafely();
+      if (session) return session;
+    }
+    return null;
   };
 
   const closeOauthBrowser = async () => {
@@ -227,18 +263,25 @@ export default function App() {
   // Handle OAuth callback from the native deep link or hosted bridge page
   const handleOAuthUrl = async (url: string) => {
     if (!isOAuthCallbackUrl(url)) return false;
+    if (oauthCallbackInFlightRef.current) {
+      oauthHandledRef.current = true;
+      console.log('[BoaWallet] OAuth callback already in progress, skipping duplicate.');
+      return true;
+    }
+
+    oauthCallbackInFlightRef.current = true;
     oauthHandledRef.current = true;
     console.log('[BoaWallet] Handling OAuth callback:', url);
     await closeOauthBrowser();
     try {
       // Normalize custom scheme → https so URL parsing is reliable in all JS environments
       const normalizedUrl = normalizeOAuthCallbackUrl(url);
-      const hasError = /(?:\?|&|#)error=/.test(normalizedUrl);
-      const hasCode = /(?:\?|&|#)code=/.test(normalizedUrl);
+      const oauthError = readOAuthParam(normalizedUrl, 'error') || readOAuthParam(normalizedUrl, 'error_description');
+      const authCode = readOAuthParam(normalizedUrl, 'code');
 
-      if (hasError) {
-        console.warn('[BoaWallet] OAuth callback contains an error:', normalizedUrl);
-        const fallbackSession = await getSessionSafely();
+      if (oauthError) {
+        console.warn('[BoaWallet] OAuth callback contains an error:', oauthError);
+        const fallbackSession = await waitForSessionSafely();
         if (fallbackSession) {
           showLoginSuccessToast();
         } else {
@@ -247,8 +290,8 @@ export default function App() {
         return true;
       }
 
-      if (!hasCode) {
-        const existingSession = await getSessionSafely();
+      if (!authCode) {
+        const existingSession = await waitForSessionSafely();
         if (existingSession) {
           console.log('[BoaWallet] Existing session found without code exchange.');
           showLoginSuccessToast();
@@ -265,7 +308,7 @@ export default function App() {
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(normalizedUrl);
+          const { data, error } = await supabase.auth.exchangeCodeForSession(authCode);
           if (!error && data?.session) {
             exchangeSession = data.session;
             break;
@@ -288,7 +331,7 @@ export default function App() {
         showLoginSuccessToast();
       } else {
         console.warn('[BoaWallet] Code exchange failed after retries, checking existing session...', lastError?.message || lastError);
-        const fallbackSession = await getSessionSafely();
+        const fallbackSession = await waitForSessionSafely();
         if (fallbackSession) {
           console.log('[BoaWallet] Fallback session found.');
           showLoginSuccessToast();
@@ -298,12 +341,14 @@ export default function App() {
       }
     } catch (e: any) {
       console.error('[BoaWallet] OAuth exchange error:', e);
-      const fallbackSession = await getSessionSafely();
+      const fallbackSession = await waitForSessionSafely();
       if (fallbackSession) {
         showLoginSuccessToast();
       } else {
         showLoginFailureToast();
       }
+    } finally {
+      oauthCallbackInFlightRef.current = false;
     }
   };
 
